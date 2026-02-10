@@ -1,0 +1,8 @@
+node_modules/
+dist/
+state/
+.env
+*.js
+*.js.map
+*.d.ts
+!scripts/*.ts

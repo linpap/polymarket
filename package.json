@@ -1,0 +1,23 @@
+{
+  "name": "polymarket-agent",
+  "version": "1.0.0",
+  "description": "Autonomous Polymarket trading agent",
+  "main": "dist/src/agent.js",
+  "scripts": {
+    "build": "tsc",
+    "start": "node dist/src/agent.js",
+    "dry-run": "DRY_RUN=true node dist/scripts/dry-run.js",
+    "setup": "node dist/scripts/setup-wallet.js",
+    "balance": "node dist/scripts/check-balance.js"
+  },
+  "dependencies": {
+    "@anthropic-ai/sdk": "^0.39.0",
+    "@polymarket/clob-client": "^5.2.0",
+    "dotenv": "^16.4.0",
+    "ethers": "^5.7.2"
+  },
+  "devDependencies": {
+    "@types/node": "^22.0.0",
+    "typescript": "^5.7.0"
+  }
+}
