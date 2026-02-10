@@ -135,3 +135,62 @@ export interface ApiCredentials {
   secret: string;
   passphrase: string;
 }
+
+// ─── Paper Trading ───
+
+export interface PaperTrade {
+  id: string;                // unique trade ID
+  timestamp: number;
+  cycleNumber: number;
+
+  // Market snapshot at time of trade
+  marketId: string;
+  conditionId: string;
+  question: string;
+  slug: string;
+  endDate: string;
+  marketPriceYes: number;    // YES price at entry
+  marketPriceNo: number;     // NO price at entry
+  liquidity: number;
+
+  // Our estimate
+  side: "YES" | "NO";
+  fairYes: number;           // our probability estimate
+  confidence: number;
+  edge: number;              // signed edge
+  reasoning: string;
+
+  // Hypothetical position
+  hypotheticalSize: number;  // USD we would have spent
+  hypotheticalShares: number;
+  entryPrice: number;        // price we'd pay for our side
+
+  // Resolution (filled in later)
+  resolved: boolean;
+  resolution: "YES" | "NO" | null;
+  resolvedAt: number | null;
+  pnl: number | null;        // hypothetical P&L
+}
+
+export interface CalibrationBucket {
+  range: string;             // e.g. "60%-70%"
+  lower: number;
+  upper: number;
+  predictions: number;       // how many trades in this bucket
+  resolvedYes: number;       // how many resolved YES
+  actualRate: number | null; // resolvedYes / predictions
+  expectedRate: number;      // midpoint of range
+  brierSum: number;          // sum of (forecast - outcome)^2
+}
+
+export interface PaperTradeState {
+  startedAt: number;
+  lastCycleAt: number;
+  cycleCount: number;
+  simulatedBankroll: number;  // tracks hypothetical balance
+  initialBankroll: number;
+  trades: PaperTrade[];
+  totalApiCost: number;
+  dailyApiCost: number;
+  dailyApiCostResetAt: number;
+}

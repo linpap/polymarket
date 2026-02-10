@@ -8,7 +8,9 @@
     "start": "node dist/src/agent.js",
     "dry-run": "DRY_RUN=true node dist/scripts/dry-run.js",
     "setup": "node dist/scripts/setup-wallet.js",
-    "balance": "node dist/scripts/check-balance.js"
+    "balance": "node dist/scripts/check-balance.js",
+    "paper-trade": "node dist/scripts/paper-trade.js",
+    "report": "node dist/scripts/report.js"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.39.0",
