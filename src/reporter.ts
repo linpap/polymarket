@@ -1,4 +1,5 @@
 import { PaperTrade, CalibrationBucket, PaperTradeState } from "./types";
+import { categorizeMarket, MarketCategory } from "./analyzer";
 import { createLogger } from "./logger";
 
 const log = createLogger("reporter");
@@ -16,12 +17,20 @@ const BUCKET_RANGES = [
   { range: "90%-100%", lower: 0.9, upper: 1.0 },
 ];
 
+function shortName(model: string): string {
+  if (model === "ensemble") return "ensemble";
+  if (model.includes("deepseek")) return "deepseek";
+  if (model.includes("gemma")) return "gemma";
+  if (model.includes("hermes")) return "hermes";
+  return model.split("/").pop()?.split(":")[0] || model;
+}
+
 export function generateReport(state: PaperTradeState): void {
   const resolved = state.trades.filter((t) => t.resolved);
   const unresolved = state.trades.filter((t) => !t.resolved);
 
   log.info("╔═══════════════════════════════════════════════════╗");
-  log.info("║           PAPER TRADING REPORT                   ║");
+  log.info("║           MODEL HORSE RACE REPORT                ║");
   log.info("╚═══════════════════════════════════════════════════╝");
 
   // ─── Overview ───
@@ -31,15 +40,19 @@ export function generateReport(state: PaperTradeState): void {
   log.info(`Total trades: ${state.trades.length}`);
   log.info(`Resolved: ${resolved.length} | Pending: ${unresolved.length}`);
   log.info(`API costs: $${state.totalApiCost.toFixed(4)}`);
-  log.info(`Simulated bankroll: $${state.simulatedBankroll.toFixed(2)} (started: $${state.initialBankroll})`);
 
   if (resolved.length === 0) {
     log.info("\nNo resolved trades yet — check back after markets close.");
+    // ─── Model Leaderboard (pending) ───
+    printModelLeaderboard(state);
     printPendingTrades(unresolved);
     return;
   }
 
-  // ─── P&L ───
+  // ─── MODEL LEADERBOARD (the main event) ───
+  printModelLeaderboard(state);
+
+  // ─── P&L (all trades) ───
   printPnl(resolved, state);
 
   // ─── Win rate ───
@@ -51,8 +64,14 @@ export function generateReport(state: PaperTradeState): void {
   // ─── Brier Score ───
   printBrierScore(resolved);
 
+  // ─── Market confirmation ───
+  printMarketConfirmation(resolved, unresolved);
+
   // ─── Edge analysis ───
   printEdgeAnalysis(resolved);
+
+  // ─── Category P&L ───
+  printCategoryPnl(resolved);
 
   // ─── Pending trades ───
   if (unresolved.length > 0) {
@@ -61,6 +80,85 @@ export function generateReport(state: PaperTradeState): void {
 
   // ─── Trade log ───
   printResolvedTradeLog(resolved);
+}
+
+function printModelLeaderboard(state: PaperTradeState): void {
+  log.info("\n══════════════════════════════════════");
+  log.info("        MODEL LEADERBOARD");
+  log.info("══════════════════════════════════════");
+  log.info("");
+  log.info("  Model      | Bankroll  | Trades | Resolved | Wins | Win%  | P&L      | Brier  | ROI");
+  log.info("  -----------|-----------|--------|----------|------|-------|----------|--------|------");
+
+  // Group trades by model
+  const models = new Set<string>();
+  for (const t of state.trades) {
+    if (t.model) models.add(t.model);
+  }
+
+  const leaderboard: { model: string; pnl: number; bankroll: number; trades: number; resolved: number; wins: number; winPct: number; brier: number; roi: number }[] = [];
+
+  for (const model of models) {
+    const modelTrades = state.trades.filter((t) => t.model === model);
+    const modelResolved = modelTrades.filter((t) => t.resolved);
+    const modelPending = modelTrades.filter((t) => !t.resolved);
+    const wins = modelResolved.filter((t) => (t.pnl ?? 0) > 0).length;
+    const pnl = modelResolved.reduce((s, t) => s + (t.pnl ?? 0), 0);
+    const risked = modelResolved.reduce((s, t) => s + t.hypotheticalSize, 0);
+    const roi = risked > 0 ? (pnl / risked) * 100 : 0;
+    const winPct = modelResolved.length > 0 ? (wins / modelResolved.length) * 100 : 0;
+    const bankroll = state.modelBankrolls?.[model] ?? 0;
+
+    // Brier score
+    let brierSum = 0;
+    for (const t of modelResolved) {
+      const outcome = t.resolution === "YES" ? 1 : 0;
+      brierSum += (t.fairYes - outcome) ** 2;
+    }
+    const brier = modelResolved.length > 0 ? brierSum / modelResolved.length : 0;
+
+    leaderboard.push({ model, pnl, bankroll, trades: modelTrades.length, resolved: modelResolved.length, wins, winPct, brier, roi });
+  }
+
+  // Sort by P&L descending
+  leaderboard.sort((a, b) => b.pnl - a.pnl);
+
+  for (const row of leaderboard) {
+    const name = shortName(row.model).padEnd(11);
+    const bankroll = ("$" + row.bankroll.toFixed(0)).padStart(9);
+    const trades = String(row.trades).padStart(6);
+    const resolved = String(row.resolved).padStart(8);
+    const wins = String(row.wins).padStart(4);
+    const winPct = (row.winPct.toFixed(0) + "%").padStart(5);
+    const pnl = ("$" + (row.pnl >= 0 ? "+" : "") + row.pnl.toFixed(2)).padStart(8);
+    const brier = row.resolved > 0 ? row.brier.toFixed(3).padStart(6) : "   N/A";
+    const roi = row.resolved > 0 ? (row.roi.toFixed(1) + "%").padStart(6) : "   N/A";
+
+    log.info(`  ${name}| ${bankroll} | ${trades} | ${resolved} | ${wins} | ${winPct} | ${pnl} | ${brier} | ${roi}`);
+  }
+
+  log.info("");
+
+  // Head-to-head: how often do models agree?
+  if (leaderboard.length > 1) {
+    const resolved = state.trades.filter((t) => t.resolved);
+    const marketIds = [...new Set(resolved.map((t) => t.marketId))];
+    let agreeCount = 0;
+    let disagreeCount = 0;
+
+    for (const mid of marketIds) {
+      const tradesOnMarket = resolved.filter((t) => t.marketId === mid);
+      if (tradesOnMarket.length <= 1) continue;
+      const sides = new Set(tradesOnMarket.map((t) => t.side));
+      if (sides.size === 1) agreeCount++;
+      else disagreeCount++;
+    }
+
+    if (agreeCount + disagreeCount > 0) {
+      log.info(`  Head-to-head: Models agreed on ${agreeCount}/${agreeCount + disagreeCount} shared markets (${((agreeCount / (agreeCount + disagreeCount)) * 100).toFixed(0)}%)`);
+      log.info(`  Disagreements: ${disagreeCount} markets where models picked different sides`);
+    }
+  }
 }
 
 function printPnl(resolved: PaperTrade[], state: PaperTradeState): void {
@@ -188,6 +286,60 @@ function printBrierScore(resolved: PaperTrade[]): void {
   log.info(`Market log loss:  ${(marketLogLossSum / resolved.length).toFixed(4)}`);
 }
 
+function printMarketConfirmation(resolved: PaperTrade[], unresolved: PaperTrade[]): void {
+  log.info("\n── Market Confirmation ──");
+  log.info("(Did the market move TOWARD our estimate after entry?)");
+
+  // For resolved trades: check if final price moved toward our fairYes
+  const withHistory = resolved.filter((t) => t.priceHistory && t.priceHistory.length >= 2);
+
+  if (withHistory.length > 0) {
+    let confirmedCount = 0;
+    let totalDrift = 0;
+
+    for (const t of withHistory) {
+      const entryYes = t.priceHistory![0].priceYes;
+      // Use last recorded price before resolution
+      const lastYes = t.priceHistory![t.priceHistory!.length - 1].priceYes;
+      // Did market move toward our fairYes?
+      const entryDistance = Math.abs(entryYes - t.fairYes);
+      const lastDistance = Math.abs(lastYes - t.fairYes);
+      const drift = entryDistance - lastDistance; // positive = toward us
+      totalDrift += drift;
+      if (drift > 0) confirmedCount++;
+    }
+
+    const confirmRate = (confirmedCount / withHistory.length) * 100;
+    const avgDrift = totalDrift / withHistory.length;
+
+    log.info(`Confirmation rate: ${confirmedCount}/${withHistory.length} (${confirmRate.toFixed(0)}%) of resolved trades moved TOWARD our estimate`);
+    log.info(`Average price drift: ${avgDrift > 0 ? "+" : ""}${(avgDrift * 100).toFixed(2)}% toward our fair value`);
+
+    if (confirmRate < 40) {
+      log.info(`⚠ WARNING: <40% confirmation — market consistently moves AWAY from our estimates (likely negative edge)`);
+    }
+  } else {
+    log.info("No resolved trades with price history yet");
+  }
+
+  // Show per-trade drift for pending trades
+  const pendingWithHistory = unresolved.filter((t) => t.priceHistory && t.priceHistory.length >= 2);
+  if (pendingWithHistory.length > 0) {
+    log.info(`\n  Pending trade drift:`);
+    for (const t of pendingWithHistory) {
+      const entryYes = t.priceHistory![0].priceYes;
+      const latestYes = t.priceHistory![t.priceHistory!.length - 1].priceYes;
+      const entryDist = Math.abs(entryYes - t.fairYes);
+      const nowDist = Math.abs(latestYes - t.fairYes);
+      const drift = entryDist - nowDist;
+      const dir = drift > 0 ? "TOWARD" : "AWAY ";
+      log.info(
+        `  ${dir} ${(drift * 100).toFixed(1).padStart(5)}% | ${t.side} "${t.question.slice(0, 50)}..." (${t.priceHistory!.length} snapshots)`
+      );
+    }
+  }
+}
+
 function printEdgeAnalysis(resolved: PaperTrade[]): void {
   log.info("\n── Edge Analysis ──");
   log.info("(Did higher-edge trades perform better?)");
@@ -216,6 +368,36 @@ function printEdgeAnalysis(resolved: PaperTrade[]): void {
   }
 }
 
+function printCategoryPnl(resolved: PaperTrade[]): void {
+  log.info("\n── Category P&L ──");
+  log.info("(Performance by market type — use this to tune category multipliers)");
+  log.info("");
+  log.info("  Category   | Trades | Wins | Win%  | P&L      | Avg Edge");
+  log.info("  -----------|--------|------|-------|----------|--------");
+
+  // Group resolved trades by category
+  const byCategory = new Map<MarketCategory, PaperTrade[]>();
+  for (const t of resolved) {
+    const cat = categorizeMarket(t.question);
+    if (!byCategory.has(cat)) byCategory.set(cat, []);
+    byCategory.get(cat)!.push(t);
+  }
+
+  // Sort categories by trade count descending
+  const sorted = [...byCategory.entries()].sort((a, b) => b[1].length - a[1].length);
+
+  for (const [cat, trades] of sorted) {
+    const wins = trades.filter((t) => (t.pnl ?? 0) > 0).length;
+    const pnl = trades.reduce((s, t) => s + (t.pnl ?? 0), 0);
+    const winPct = ((wins / trades.length) * 100).toFixed(0);
+    const avgEdge = (trades.reduce((s, t) => s + Math.abs(t.edge), 0) / trades.length * 100).toFixed(1);
+
+    log.info(
+      `  ${cat.padEnd(11)}| ${String(trades.length).padEnd(6)} | ${String(wins).padEnd(4)} | ${(winPct + "%").padEnd(5)} | $${pnl >= 0 ? "+" : ""}${pnl.toFixed(2).padStart(7)} | ${avgEdge}%`
+    );
+  }
+}
+
 function printPendingTrades(unresolved: PaperTrade[]): void {
   log.info(`\n── Pending Trades (${unresolved.length}) ──`);
 
@@ -228,8 +410,9 @@ function printPendingTrades(unresolved: PaperTrade[]): void {
     const daysLeft = Math.ceil(
       (new Date(t.endDate).getTime() - Date.now()) / (1000 * 60 * 60 * 24)
     );
+    const modelTag = t.model ? `[${shortName(t.model)}] ` : "";
     log.info(
-      `  ${t.side} $${t.hypotheticalSize.toFixed(2)} @ ${t.entryPrice.toFixed(2)} — "${t.question}" (${daysLeft}d left, ${(t.edge * 100).toFixed(0)}% edge)`
+      `  ${modelTag}${t.side} $${t.hypotheticalSize.toFixed(2)} @ ${t.entryPrice.toFixed(2)} — "${t.question}" (${daysLeft}d left, ${(t.edge * 100).toFixed(0)}% edge)`
     );
   }
 
@@ -248,8 +431,9 @@ function printResolvedTradeLog(resolved: PaperTrade[]): void {
     const won = (t.pnl ?? 0) > 0;
     const tag = won ? "WIN " : "LOSS";
     const pnl = t.pnl ?? 0;
+    const modelTag = t.model ? shortName(t.model) : "?";
     log.info(
-      `  [${tag}] ${t.side} @ ${t.entryPrice.toFixed(2)} → ${t.resolution} | P&L $${pnl.toFixed(2)} | "${t.question}"`
+      `  [${tag}] [${modelTag}] ${t.side} @ ${t.entryPrice.toFixed(2)} → ${t.resolution} | P&L $${pnl.toFixed(2)} | "${t.question}"`
     );
   }
 
