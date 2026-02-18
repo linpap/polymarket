@@ -1,7 +1,7 @@
 import { createLogger } from "../logger";
-import { SERIES_TICKERS, KALSHI_TRADING } from "./config";
+import { TARGET_CATEGORIES, KALSHI_TRADING } from "./config";
 import { KalshiMarket, KalshiCategory } from "./types";
-import { fetchMarketsBySeries } from "./api";
+import { fetchOpenMarkets } from "./api";
 
 const log = createLogger("kalshi-scanner");
 
@@ -11,23 +11,24 @@ let scanTimer: ReturnType<typeof setInterval> | null = null;
 // ─── Category detection ───
 
 export function detectCategory(market: KalshiMarket): KalshiCategory {
-  const series = market.series_ticker.toUpperCase();
   const title = market.title.toLowerCase();
   const cat = market.category.toLowerCase();
+  const ticker = market.ticker.toLowerCase();
 
   // Crypto
-  if (series.startsWith("KXBTC") || series.startsWith("KXETH") || series.startsWith("KXSOL")) return "crypto";
-  if (cat.includes("crypto") || title.includes("bitcoin") || title.includes("ethereum")) return "crypto";
+  if (cat.includes("crypto") || title.includes("bitcoin") || title.includes("ethereum") || title.includes("crypto")) return "crypto";
+  if (ticker.includes("btc") || ticker.includes("eth") || ticker.includes("sol")) return "crypto";
 
   // Economics
-  if (["KXFED", "KXCPI", "KXGDP", "KXJOBS", "KXINX"].some((s) => series.startsWith(s))) return "economics";
-  if (cat.includes("economics") || cat.includes("financial") || title.includes("fed") || title.includes("inflation")) return "economics";
+  if (cat.includes("economics") || cat.includes("financial")) return "economics";
+  if (title.includes("inflation") || title.includes("unemployment") || title.includes("gdp") || title.includes("ipo")) return "economics";
 
   // Politics
-  if (cat.includes("politics") || title.includes("president") || title.includes("congress") || title.includes("election")) return "politics";
+  if (cat.includes("politics") || cat.includes("election")) return "politics";
+  if (title.includes("president") || title.includes("congress") || title.includes("trump") || title.includes("senate")) return "politics";
 
   // Weather
-  if (cat.includes("weather") || cat.includes("climate") || title.includes("temperature") || title.includes("hurricane")) return "weather";
+  if (cat.includes("weather") || cat.includes("climate")) return "weather";
 
   return "other";
 }
@@ -35,26 +36,36 @@ export function detectCategory(market: KalshiMarket): KalshiCategory {
 // ─── Market filtering ───
 
 function isEligible(market: KalshiMarket): boolean {
-  // Must be open
-  if (market.status !== "open") return false;
+  // Must be active (Kalshi uses "active" not "open")
+  if (market.status !== "active" && market.status !== "open") return false;
+
+  // Skip sports parlays/multivariate (these are complex multi-leg bets)
+  if (market.ticker.includes("KXMVE") || market.ticker.includes("MULTIGAME")) return false;
 
   // Volume filter
   if (market.volume_24h < KALSHI_TRADING.minVolume24h) return false;
 
-  // Spread filter
-  const spread = market.yes_ask - market.yes_bid;
-  if (spread > KALSHI_TRADING.maxSpread) return false;
+  // Spread filter — only check if both prices are nonzero
+  if (market.yes_ask > 0 && market.yes_bid > 0) {
+    const spread = market.yes_ask - market.yes_bid;
+    if (spread > KALSHI_TRADING.maxSpread) return false;
+  }
 
   // Time to close filter
   const closeTime = new Date(market.close_time).getTime();
+  if (isNaN(closeTime)) return false;
   const now = Date.now();
   const secondsToClose = (closeTime - now) / 1000;
 
   if (secondsToClose < KALSHI_TRADING.minTimeToClose) return false;
   if (secondsToClose > KALSHI_TRADING.maxTimeToClose) return false;
 
-  // Must have valid prices
-  if (market.yes_ask <= 0 || market.no_ask <= 0) return false;
+  // Must have valid ask price on at least one side
+  if (market.yes_ask <= 0 && market.no_ask <= 0) return false;
+
+  // Filter to target categories
+  const cat = market.category;
+  if (!TARGET_CATEGORIES.some((tc) => cat.includes(tc))) return false;
 
   return true;
 }
@@ -62,40 +73,36 @@ function isEligible(market: KalshiMarket): boolean {
 // ─── Scanning ───
 
 async function scan(): Promise<void> {
-  const allMarkets: KalshiMarket[] = [];
+  try {
+    // Fetch a broad set of markets (paginated)
+    const allMarkets = await fetchOpenMarkets(500);
 
-  for (const series of SERIES_TICKERS) {
-    try {
-      const markets = await fetchMarketsBySeries(series);
-      allMarkets.push(...markets);
-    } catch (e) {
-      log.debug(`Failed scanning series ${series}`, (e as Error).message);
-    }
+    // Filter eligible markets
+    const eligible = allMarkets.filter(isEligible);
+
+    // Deduplicate by ticker
+    const seen = new Set<string>();
+    activeMarkets = eligible.filter((m) => {
+      if (seen.has(m.ticker)) return false;
+      seen.add(m.ticker);
+      return true;
+    });
+
+    log.info("Scan complete", {
+      raw: allMarkets.length,
+      eligible: activeMarkets.length,
+      categories: [...new Set(activeMarkets.map((m) => m.category))].join(", ") || "none",
+    });
+  } catch (e) {
+    log.error("Scan failed", (e as Error).message);
   }
-
-  // Filter eligible markets
-  const eligible = allMarkets.filter(isEligible);
-
-  // Deduplicate by ticker
-  const seen = new Set<string>();
-  activeMarkets = eligible.filter((m) => {
-    if (seen.has(m.ticker)) return false;
-    seen.add(m.ticker);
-    return true;
-  });
-
-  log.info("Scan complete", {
-    raw: allMarkets.length,
-    eligible: activeMarkets.length,
-    series: SERIES_TICKERS.length,
-  });
 }
 
 // ─── Public API ───
 
 export async function startScanner(): Promise<void> {
   log.info("Starting Kalshi market scanner", {
-    series: SERIES_TICKERS.join(", "),
+    categories: TARGET_CATEGORIES.join(", "),
     interval: KALSHI_TRADING.scanIntervalMs,
   });
 

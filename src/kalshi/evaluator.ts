@@ -23,6 +23,14 @@ export async function evaluateMarket(market: KalshiMarket): Promise<KalshiSignal
   const category = detectCategory(market);
   const multiplier = CATEGORY_MULTIPLIERS[category] || 0.7;
 
+  log.debug("Evaluating market", {
+    ticker: market.ticker,
+    title: market.title.slice(0, 50),
+    category,
+    yes_ask: market.yes_ask.toFixed(2),
+    no_ask: market.no_ask.toFixed(2),
+  });
+
   const signals: KalshiSignal[] = [];
 
   // Strategy 1: Crypto price (fast, no LLM)

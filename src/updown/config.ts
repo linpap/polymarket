@@ -30,13 +30,13 @@ export const SCANNER_POLL_MS = 10_000; // 10 seconds
 
 // ─── Kalshi ───
 
-export const KALSHI_API = "https://trading-api.kalshi.com/trade-api/v2";
+export const KALSHI_API = "https://api.elections.kalshi.com/trade-api/v2";
 export const KALSHI_POLL_MS = 30_000; // 30 seconds
 
 // ─── NVIDIA GLM ───
 
 export const NVIDIA_ENDPOINT = "https://integrate.api.nvidia.com/v1/chat/completions";
-export const NVIDIA_MODEL = "nvidia/llama-3.3-nemotron-70b-instruct";
+export const NVIDIA_MODEL = "meta/llama-3.3-70b-instruct";
 
 // ─── Trading params ───
 

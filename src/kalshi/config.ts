@@ -10,18 +10,18 @@ export const LOG_LEVEL = process.env.LOG_LEVEL || "info";
 
 // ─── Kalshi API ───
 
-export const KALSHI_API = "https://trading-api.kalshi.com/trade-api/v2";
+export const KALSHI_API = "https://api.elections.kalshi.com/trade-api/v2";
 export const KALSHI_RATE_LIMIT_MS = 500; // 500ms between calls
 
-// Series tickers to scan
-export const SERIES_TICKERS = [
-  "KXBTC",   // Bitcoin price
-  "KXETH",   // Ethereum price
-  "KXFED",   // Fed rate decisions
-  "KXCPI",   // CPI data
-  "KXGDP",   // GDP
-  "KXJOBS",  // Jobs report
-  "KXINX",   // S&P 500 range
+// Target categories to scan (broad — Kalshi currently has mostly politics/sports/entertainment)
+export const TARGET_CATEGORIES = [
+  "Economics",
+  "Financials",
+  "Politics",
+  "Climate and Weather",
+  "Science and Technology",
+  "Companies",
+  "World",
 ] as const;
 
 // ─── Binance WebSocket (reused from updown) ───
@@ -40,7 +40,7 @@ export const ASSET_TO_SYMBOL: Record<string, TrackedSymbol> = {
 // ─── NVIDIA GLM ───
 
 export const NVIDIA_ENDPOINT = "https://integrate.api.nvidia.com/v1/chat/completions";
-export const NVIDIA_MODEL = "nvidia/llama-3.3-nemotron-70b-instruct";
+export const NVIDIA_MODEL = "meta/llama-3.3-70b-instruct";
 
 // ─── OpenRouter (fallback) ───
 
@@ -60,24 +60,24 @@ export const KALSHI_TRADING = {
   kellyFraction: 0.20,         // 20% Kelly (conservative)
 
   // Market filters
-  minVolume24h: 10,
-  maxSpread: 0.15,             // 15% max bid-ask spread
+  minVolume24h: 0,             // allow zero volume (many Kalshi markets are thin)
+  maxSpread: 0.50,             // 50% max spread (Kalshi spreads are wide)
   minTimeToClose: 60 * 60,     // 1 hour minimum
-  maxTimeToClose: 7 * 24 * 60 * 60, // 7 days maximum
+  maxTimeToClose: 365 * 24 * 60 * 60, // 1 year maximum (Kalshi has long-term markets)
 
   // Strategy-specific minimum edges
   cryptoPriceMinEdge: 0.03,    // 3%
   crossArbMinEdge: 0.05,       // 5%
-  llmFairMinEdge: 0.08,        // 8% (higher since LLM is less reliable)
+  llmFairMinEdge: 0.04,        // 4% (was 8% — lowered to generate trades)
 
   // LLM confidence thresholds
-  llmMinConfidence: 0.60,      // reject below 60%
+  llmMinConfidence: 0.50,      // reject below 50% (was 60%)
 
   // Resolution
   resolutionGraceMinutes: 5,   // wait 5min after close for result
 
   // Scan interval
-  scanIntervalMs: 30_000,      // every 30s
+  scanIntervalMs: 120_000,     // every 2 min (LLM calls take time)
   statusLogIntervalMs: 60_000, // status every 60s
 } as const;
 

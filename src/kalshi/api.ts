@@ -1,6 +1,6 @@
 import { createLogger } from "../logger";
 import { KALSHI_API, KALSHI_RATE_LIMIT_MS } from "./config";
-import { KalshiMarket, KalshiRawMarket, KalshiMarketsResponse } from "./types";
+import { KalshiMarket } from "./types";
 
 const log = createLogger("kalshi-api");
 
@@ -39,14 +39,14 @@ async function kalshiFetch(path: string): Promise<any> {
 
 // ─── Convert raw market to our type ───
 
-function mapMarket(raw: KalshiRawMarket): KalshiMarket {
+function mapMarket(raw: any, eventCategory?: string, eventTitle?: string): KalshiMarket {
   return {
     ticker: raw.ticker || "",
     event_ticker: raw.event_ticker || "",
     series_ticker: raw.series_ticker || "",
-    title: raw.title || "",
+    title: raw.title || eventTitle || "",
     subtitle: raw.subtitle || "",
-    category: raw.category || "",
+    category: eventCategory || raw.category || "",
     yes_ask: (raw.yes_ask || 0) / 100,   // cents → 0-1
     no_ask: (raw.no_ask || 0) / 100,
     yes_bid: (raw.yes_bid || 0) / 100,
@@ -55,46 +55,15 @@ function mapMarket(raw: KalshiRawMarket): KalshiMarket {
     volume: raw.volume || 0,
     volume_24h: raw.volume_24h || 0,
     open_interest: raw.open_interest || 0,
-    close_time: raw.close_time || "",
-    result: raw.result || "",
+    close_time: raw.close_time || raw.expiration_time || "",
+    result: raw.result || raw.expiration_value || "",
     status: raw.status || "",
   };
 }
 
-// ─── Fetch markets with pagination ───
+// ─── Fetch markets via events endpoint (carries category) ───
 
-export async function fetchMarketsBySeries(seriesTicker: string): Promise<KalshiMarket[]> {
-  const all: KalshiMarket[] = [];
-  let cursor = "";
-  const limit = 100;
-
-  try {
-    do {
-      const params = new URLSearchParams({
-        series_ticker: seriesTicker,
-        status: "open",
-        limit: String(limit),
-      });
-      if (cursor) params.set("cursor", cursor);
-
-      const data: KalshiMarketsResponse = await kalshiFetch(`/markets?${params}`);
-      const markets = (data.markets || []).map(mapMarket);
-      all.push(...markets);
-
-      cursor = data.cursor || "";
-      // Stop if we got fewer than limit (last page)
-      if (markets.length < limit) break;
-    } while (cursor);
-  } catch (e) {
-    log.debug(`Failed to fetch series ${seriesTicker}`, (e as Error).message);
-  }
-
-  return all;
-}
-
-// ─── Fetch all open markets (broad scan) ───
-
-export async function fetchOpenMarkets(limit = 200): Promise<KalshiMarket[]> {
+export async function fetchOpenMarkets(limit = 500): Promise<KalshiMarket[]> {
   const all: KalshiMarket[] = [];
   let cursor = "";
 
@@ -102,21 +71,31 @@ export async function fetchOpenMarkets(limit = 200): Promise<KalshiMarket[]> {
     do {
       const params = new URLSearchParams({
         status: "open",
-        limit: String(Math.min(limit - all.length, 100)),
+        with_nested_markets: "true",
+        limit: String(Math.min(limit - all.length, 50)),
       });
       if (cursor) params.set("cursor", cursor);
 
-      const data: KalshiMarketsResponse = await kalshiFetch(`/markets?${params}`);
-      const markets = (data.markets || []).map(mapMarket);
-      all.push(...markets);
+      const data = await kalshiFetch(`/events?${params}`);
+      const events = data.events || [];
+
+      for (const event of events) {
+        const category = event.category || "";
+        const eventTitle = event.title || "";
+        const markets = event.markets || [];
+        for (const m of markets) {
+          all.push(mapMarket(m, category, eventTitle));
+        }
+      }
 
       cursor = data.cursor || "";
-      if (markets.length < 100 || all.length >= limit) break;
+      if (events.length < 50 || all.length >= limit) break;
     } while (cursor);
   } catch (e) {
     log.debug("Failed to fetch open markets", (e as Error).message);
   }
 
+  log.debug("Fetched markets", { total: all.length });
   return all;
 }
 
@@ -130,21 +109,5 @@ export async function fetchMarket(ticker: string): Promise<KalshiMarket | null> 
   } catch (e) {
     log.debug(`Failed to fetch market ${ticker}`, (e as Error).message);
     return null;
-  }
-}
-
-// ─── Fetch event markets (all markets under one event) ───
-
-export async function fetchEventMarkets(eventTicker: string): Promise<KalshiMarket[]> {
-  try {
-    const params = new URLSearchParams({
-      event_ticker: eventTicker,
-      limit: "100",
-    });
-    const data: KalshiMarketsResponse = await kalshiFetch(`/markets?${params}`);
-    return (data.markets || []).map(mapMarket);
-  } catch (e) {
-    log.debug(`Failed to fetch event ${eventTicker}`, (e as Error).message);
-    return [];
   }
 }

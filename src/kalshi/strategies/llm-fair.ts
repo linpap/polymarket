@@ -114,30 +114,26 @@ function buildPrompt(market: KalshiMarket, category: KalshiCategory): string {
     year: "numeric",
   });
 
-  return `You are a prediction market analyst. Estimate the probability that this Kalshi market resolves YES.
+  return `You are an independent prediction analyst. Your job is to estimate probabilities from first principles — do NOT simply agree with the market price.
 
-Market: "${market.title}"
-${market.subtitle ? `Details: "${market.subtitle}"` : ""}
+Question: "${market.title}"
+${market.subtitle ? `Context: "${market.subtitle}"` : ""}
 Category: ${category}
-Close date: ${closeDate}
-Current YES price: ${(market.yes_ask * 100).toFixed(0)} cents
-Current NO price: ${(market.no_ask * 100).toFixed(0)} cents
-Volume: ${market.volume_24h} contracts (24h)
+Resolution date: ${closeDate}
 
-Consider:
-- Base rates and historical data for similar events
-- Current market conditions and recent trends
-- Time remaining until resolution
-- The market price as a wisdom-of-crowds estimate
+IMPORTANT: Form your OWN estimate FIRST based on:
+- Historical base rates for similar events
+- Current geopolitical/economic context (today is February 2026)
+- Logical reasoning about what needs to happen for YES to resolve
+- Time pressure: how much could change before ${closeDate}?
 
-Be calibrated. If you are unsure, your probability should be close to the market price.
-Only deviate significantly if you have strong reasoning.
+Do NOT anchor to any price. Think step by step, then give your independent probability.
 
 Respond with ONLY a JSON object:
-{"probability": 0.XX, "confidence": 0.XX, "reasoning": "1-2 sentence explanation"}
+{"probability": 0.XX, "confidence": 0.XX, "reasoning": "your step-by-step reasoning in 2-3 sentences"}
 
-probability = your estimated chance of YES resolution (0-1)
-confidence = how confident you are in your estimate (0-1, where 0.5 = unsure, 0.9 = very sure)`;
+probability = your estimated chance this resolves YES (0.0 to 1.0)
+confidence = how confident you are (0.5 = coin flip, 0.9 = very sure)`;
 }
 
 // ─── Strategy entry point ───
@@ -161,6 +157,15 @@ export async function evaluateLLMFair(market: KalshiMarket): Promise<KalshiSigna
     return null;
   }
 
+  log.debug("LLM estimate received", {
+    ticker: market.ticker,
+    probability: estimate.probability.toFixed(3),
+    confidence: estimate.confidence.toFixed(2),
+    yes_ask: market.yes_ask.toFixed(3),
+    no_ask: market.no_ask.toFixed(3),
+    reasoning: estimate.reasoning.slice(0, 60),
+  });
+
   // Reject low-confidence estimates
   if (estimate.confidence < KALSHI_TRADING.llmMinConfidence) {
     log.debug("LLM confidence too low", {
@@ -176,6 +181,14 @@ export async function evaluateLLMFair(market: KalshiMarket): Promise<KalshiSigna
   const yesEdge = fairValue - market.yes_ask;
   const noEdge = (1 - fairValue) - market.no_ask;
 
+  log.debug("Edge calculation", {
+    ticker: market.ticker,
+    fairValue: fairValue.toFixed(3),
+    yesEdge: (yesEdge * 100).toFixed(1) + "%",
+    noEdge: (noEdge * 100).toFixed(1) + "%",
+    minEdge: (KALSHI_TRADING.llmFairMinEdge * 100).toFixed(1) + "%",
+  });
+
   let side: "yes" | "no";
   let edge: number;
   let marketPrice: number;
@@ -189,6 +202,7 @@ export async function evaluateLLMFair(market: KalshiMarket): Promise<KalshiSigna
     edge = noEdge;
     marketPrice = market.no_ask;
   } else {
+    log.debug("No edge found", { ticker: market.ticker });
     return null;
   }
 
