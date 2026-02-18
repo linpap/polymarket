@@ -91,8 +91,8 @@ function estimatedFinalValue(magnitude: number, timeRemaining: number): number {
   // If price has moved significantly with little time remaining,
   // the outcome is likely locked in. Estimate the resolution value.
   // Larger moves + less time = higher estimated value near 1.0
-  const timeDecay = Math.max(0, 1 - timeRemaining / 300); // 0 at 5min, 1 at 0min
-  const magnitudeScore = Math.min(1, magnitude / 0.005); // caps at 0.5% move
+  const timeDecay = Math.max(0, 1 - timeRemaining / 600); // 0 at 10min, 1 at 0min
+  const magnitudeScore = Math.min(1, magnitude / 0.002); // caps at 0.2% move
   const estimated = 0.5 + 0.5 * timeDecay * magnitudeScore;
   return Math.min(0.98, estimated); // never assume guaranteed
 }
@@ -100,12 +100,14 @@ function estimatedFinalValue(magnitude: number, timeRemaining: number): number {
 function computeConfidence(magnitude: number, timeRemaining: number, entryPrice: number): number {
   let conf = 0.5;
   // More magnitude = more confidence
+  if (magnitude > 0.0005) conf += 0.05;
+  if (magnitude > 0.001) conf += 0.1;
   if (magnitude > 0.003) conf += 0.1;
   if (magnitude > 0.005) conf += 0.1;
-  if (magnitude > 0.01) conf += 0.1;
   // Less time remaining = more locked in
+  if (timeRemaining < 300) conf += 0.05;
+  if (timeRemaining < 120) conf += 0.05;
   if (timeRemaining < 60) conf += 0.1;
-  if (timeRemaining < 30) conf += 0.05;
   // Cheaper entry = more upside
   if (entryPrice < 0.80) conf += 0.05;
   if (entryPrice < 0.60) conf += 0.05;
