@@ -1,0 +1,48 @@
+name: Up/Down Trading Bot
+
+on:
+  schedule:
+    # 23:15 UTC = 6:15 PM EST = 4:45 AM IST (15 min before market opens)
+    - cron: '15 23 * * *'
+  workflow_dispatch: {} # manual trigger
+
+jobs:
+  trade:
+    runs-on: ubuntu-latest
+    timeout-minutes: 300 # 5 hours max (covers 4.5h window + buffer)
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - run: npm ci
+
+      # Restore state from previous run
+      - uses: actions/cache@v4
+        with:
+          path: state/updown-trades.json
+          key: updown-state-${{ github.run_number }}
+          restore-keys: updown-state-
+
+      # Ensure state directory exists
+      - run: mkdir -p state
+
+      # Create .env from secrets
+      - run: |
+          echo "NVIDIA_API_KEY=${{ secrets.NVIDIA_API_KEY }}" >> .env
+          echo "OPENROUTER_API_KEY=${{ secrets.OPENROUTER_API_KEY }}" >> .env
+          echo "DRY_RUN=true" >> .env
+          echo "LOG_LEVEL=info" >> .env
+
+      # Run bot for 4.5 hours (16200 seconds), then graceful shutdown
+      - run: timeout --signal=SIGTERM 16200 npx tsx src/updown/index.ts || true
+
+      # Upload state as artifact for inspection
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: updown-state-${{ github.run_id }}
+          path: state/updown-trades.json
