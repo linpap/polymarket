@@ -6,3 +6,4 @@ state/
 *.js.map
 *.d.ts
 !scripts/*.ts
+*.log

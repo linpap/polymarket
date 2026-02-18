@@ -48,6 +48,7 @@ export interface Stage2Estimate {
   confidence: number;     // 0-1, how sure the model is
   reasoning: string;
   keyFactors: string[];
+  informationBasis: "concrete" | "informed" | "speculative";
 }
 
 // ─── Analysis ───
@@ -61,6 +62,8 @@ export interface Signal {
   side: "YES" | "NO";
   marketPrice: number;    // price we'd pay
   tokenId: string;        // which token to buy
+  informationBasis: "concrete" | "informed" | "speculative";
+  model?: string;         // which model produced this signal
 }
 
 // ─── Sizing ───
@@ -170,6 +173,13 @@ export interface PaperTrade {
   resolution: "YES" | "NO" | null;
   resolvedAt: number | null;
   pnl: number | null;        // hypothetical P&L
+
+  // Price tracking (added post-entry to track market confirmation)
+  priceHistory?: { timestamp: number; priceYes: number }[];
+
+  // Metadata
+  legacy?: boolean;           // true = taken under old rules, exclude from new-strategy P&L
+  model?: string;             // which model made this prediction
 }
 
 export interface CalibrationBucket {
@@ -187,10 +197,11 @@ export interface PaperTradeState {
   startedAt: number;
   lastCycleAt: number;
   cycleCount: number;
-  simulatedBankroll: number;  // tracks hypothetical balance
+  simulatedBankroll: number;  // tracks hypothetical balance (legacy, sum of all models)
   initialBankroll: number;
   trades: PaperTrade[];
   totalApiCost: number;
   dailyApiCost: number;
   dailyApiCostResetAt: number;
+  modelBankrolls?: Record<string, number>;  // per-model simulated bankroll
 }

@@ -10,16 +10,19 @@
     "setup": "node dist/scripts/setup-wallet.js",
     "balance": "node dist/scripts/check-balance.js",
     "paper-trade": "node dist/scripts/paper-trade.js",
-    "report": "node dist/scripts/report.js"
+    "report": "node dist/scripts/report.js",
+    "backtest": "node dist/scripts/backtest.js",
+    "updown": "npx tsx src/updown/index.ts"
   },
   "dependencies": {
-    "@anthropic-ai/sdk": "^0.39.0",
     "@polymarket/clob-client": "^5.2.0",
     "dotenv": "^16.4.0",
-    "ethers": "^5.7.2"
+    "ethers": "^5.7.2",
+    "ws": "^8.18.0"
   },
   "devDependencies": {
     "@types/node": "^22.0.0",
+    "@types/ws": "^8.5.0",
     "typescript": "^5.7.0"
   }
 }

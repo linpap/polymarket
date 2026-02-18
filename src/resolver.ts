@@ -104,26 +104,21 @@ async function fetchMarketStatuses(
 ): Promise<Map<string, GammaMarketResolution>> {
   const map = new Map<string, GammaMarketResolution>();
 
-  // Fetch in batches of 20 to avoid URL length limits
-  for (let i = 0; i < marketIds.length; i += 20) {
-    const batch = marketIds.slice(i, i + 20);
-
+  // Fetch each market individually — Gamma API doesn't support multi-ID queries well
+  for (const id of marketIds) {
     try {
       const { data } = await axios.get<GammaMarketResolution[]>(
         `${GAMMA_API}/markets`,
         {
-          params: {
-            id: batch.join(","),
-            limit: batch.length,
-          },
+          params: { id, limit: 1 },
         }
       );
 
-      for (const market of data) {
-        map.set(market.id, market);
+      if (data && data.length > 0) {
+        map.set(data[0].id, data[0]);
       }
     } catch (err) {
-      log.error(`Failed to fetch market statuses for batch starting at ${i}`, err);
+      log.error(`Failed to fetch market status for ${id}`, err);
     }
   }
 

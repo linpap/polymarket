@@ -45,6 +45,12 @@ export function sizePositions(
 function sizeOne(signal: Signal, balance: number): SizedPosition | null {
   const price = signal.marketPrice;
 
+  // Skip longshot markets below threshold (e.g., < 10 cents) - these rarely win
+  if (price < TRADING.minPriceThreshold) {
+    log.debug(`Skipping longshot "${signal.market.question}" (price ${price} < ${TRADING.minPriceThreshold})`);
+    return null;
+  }
+
   // Net odds: if we buy at 0.40, we get back $1 if we win, so b = (1/0.40 - 1) = 1.5
   const b = 1 / price - 1;
 
@@ -67,9 +73,25 @@ function sizeOne(signal: Signal, balance: number): SizedPosition | null {
   // Position size in USD
   let positionSize = balance * kellyFraction;
 
-  // Cap at max position % of total balance
-  const maxSize = balance * TRADING.maxPositionPct;
+  // Asymmetric max position sizing based on entry price
+  // Cheap bets (< 0.35): up to 15% — high payoff ratio justifies larger position
+  // Mid bets (0.35-0.50): up to 12% — moderate payoff
+  // Expensive bets (> 0.50): capped at 8% — low payoff, high risk zone
+  let maxPositionPct: number;
+  if (price < 0.35) {
+    maxPositionPct = 0.15;
+  } else if (price <= 0.50) {
+    maxPositionPct = 0.12;
+  } else {
+    maxPositionPct = 0.08;
+  }
+  const maxSize = balance * maxPositionPct;
   positionSize = Math.min(positionSize, maxSize);
+
+  // Max loss cap: no single trade can risk more than $75 or 7.5% of bankroll
+  // When you buy at price X, your max loss IS the position size (you lose everything if wrong)
+  const maxRiskDollars = Math.min(75, balance * TRADING.maxTradeRisk);
+  positionSize = Math.min(positionSize, maxRiskDollars);
 
   // Floor at minimum trade size
   if (positionSize < TRADING.minTradeSize) {
@@ -86,6 +108,8 @@ function sizeOne(signal: Signal, balance: number): SizedPosition | null {
 
   log.info(`Sized: $${positionSize.toFixed(2)} on ${signal.side} "${signal.market.question}"`, {
     kelly: (kellyFraction * 100).toFixed(1) + "%",
+    maxPct: (maxPositionPct * 100).toFixed(0) + "%",
+    maxRisk: "$" + maxRiskDollars.toFixed(0),
     shares: shares.toFixed(2),
     price: price.toFixed(3),
   });
