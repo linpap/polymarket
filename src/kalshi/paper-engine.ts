@@ -98,6 +98,15 @@ function calculateSize(signal: KalshiSignal): number {
 // ─── Paper trade execution ───
 
 export function executePaperTrade(signal: KalshiSignal): KalshiTrade | null {
+  // Only one position per ticker — skip if already holding
+  const alreadyHolding = state.openPositions.some(
+    (p) => p.market.ticker === signal.market.ticker
+  );
+  if (alreadyHolding) {
+    log.debug("Already holding position", { ticker: signal.market.ticker });
+    return null;
+  }
+
   const size = calculateSize(signal);
 
   if (size < 1) {

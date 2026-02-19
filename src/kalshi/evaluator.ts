@@ -10,7 +10,7 @@ const log = createLogger("kalshi-eval");
 
 // Track recently evaluated markets to avoid spam
 const recentlyEvaluated = new Map<string, number>();
-const EVAL_COOLDOWN_MS = 5 * 60 * 1000; // 5 min cooldown per market
+const EVAL_COOLDOWN_MS = 30 * 60 * 1000; // 30 min cooldown per market
 
 // ─── Evaluate a single market across all strategies ───
 
