@@ -1,6 +1,6 @@
 import { createLogger } from "../logger";
 import { NVIDIA_API_KEY, NVIDIA_ENDPOINT, NVIDIA_MODEL, UPDOWN_TRADING, ASSET_TO_SYMBOL } from "./config";
-import { UpDownMarket, ArbitrageSignal, MarketPrices, BinancePrice } from "./types";
+import { UpDownMarket, ArbitrageSignal, MarketPrices, BinancePrice, CrossPlatformOpp } from "./types";
 import { getPrice } from "./binance-feed";
 import { getBestPrices } from "./clob-reader";
 
@@ -91,11 +91,11 @@ function estimatedFinalValue(magnitude: number, timeRemaining: number): number {
   // If price has moved significantly with little time remaining,
   // the outcome is likely locked in. Estimate the resolution value.
   // Larger moves + less time = higher estimated value near 1.0
-  const timeDecay = Math.max(0, 1 - timeRemaining / 1800); // 0 at 30min, 1 at 0min
-  const magnitudeScore = Math.min(1, magnitude / 0.001); // caps at 0.1% move (was 0.2%)
-  const estimated = 0.5 + 0.45 * timeDecay * magnitudeScore;
-  // Also give credit for pure magnitude even with time left
-  const magnitudeBonus = Math.min(0.15, magnitude * 50);
+  const timeDecay = Math.max(0, 1 - timeRemaining / UPDOWN_TRADING.latencyTimeRemaining); // 0 at gate, 1 at 0s
+  const magnitudeScore = Math.min(1, magnitude / 0.0005); // caps at 0.05% move (more sensitive)
+  const estimated = 0.5 + 0.40 * timeDecay * magnitudeScore;
+  // Give meaningful credit for pure magnitude even with time left
+  const magnitudeBonus = Math.min(0.20, magnitude * 100);
   return Math.min(0.98, estimated + magnitudeBonus);
 }
 
@@ -237,9 +237,79 @@ Respond with ONLY a JSON object:
   }
 }
 
+// ─── Strategy 3: Cross-Platform Arbitrage ───
+// Kalshi price diverges significantly from Polymarket → trade with the stronger signal
+
+export function evaluateCrossPlatformArb(
+  market: UpDownMarket,
+  prices: MarketPrices,
+  opps: CrossPlatformOpp[]
+): ArbitrageSignal | null {
+  // Find matching opp for this specific market
+  const opp = opps.find(o => o.polyMarket.marketId === market.marketId);
+  if (!opp) return null;
+
+  const { kalshiYes, polyYes, spread } = opp;
+
+  // Need minimum spread to trade
+  if (spread < UPDOWN_TRADING.crossPlatformMinSpread) return null;
+
+  // Don't trade if too close to expiry
+  const now = Date.now();
+  const timeRemaining = (market.windowEnd - now) / 1000;
+  if (timeRemaining < 10) return null;
+
+  let action: "buy-yes" | "buy-no";
+  let entryPrice: number;
+  let edge: number;
+
+  if (kalshiYes > UPDOWN_TRADING.crossPlatformKalshiMin) {
+    // Kalshi strongly favors YES → buy YES on Poly if it's cheap
+    action = "buy-yes";
+    entryPrice = prices.yesBook.bestAsk;
+    if (entryPrice > 0.55) return null; // not cheap enough
+    edge = (kalshiYes - entryPrice) * UPDOWN_TRADING.crossPlatformEdgeDiscount;
+  } else if (kalshiYes < (1 - UPDOWN_TRADING.crossPlatformKalshiMin)) {
+    // Kalshi strongly against YES → buy NO on Poly if it's cheap
+    action = "buy-no";
+    entryPrice = prices.noBook.bestAsk;
+    if (entryPrice > 0.55) return null; // not cheap enough
+    const kalshiNo = 1 - kalshiYes;
+    edge = (kalshiNo - entryPrice) * UPDOWN_TRADING.crossPlatformEdgeDiscount;
+  } else {
+    return null; // Kalshi signal not decisive enough
+  }
+
+  if (edge < UPDOWN_TRADING.latencyMinEdge) return null;
+
+  // Confidence based on spread magnitude and conditions
+  let confidence = 0.50;
+  if (spread > 0.15) confidence += 0.05;
+  if (spread > 0.25) confidence += 0.10;
+  if (spread > 0.35) confidence += 0.10;
+  if (timeRemaining < 1800) confidence += 0.03;
+  if (timeRemaining < 600) confidence += 0.05;
+  if (entryPrice < 0.50) confidence += 0.05;
+  confidence = Math.min(0.90, confidence);
+
+  return {
+    type: "cross-platform",
+    market,
+    edge,
+    confidence,
+    action,
+    reasoning: `Cross-platform: Kalshi YES=${kalshiYes.toFixed(3)} vs Poly YES=${polyYes.toFixed(3)}, ` +
+      `spread=${(spread * 100).toFixed(1)}%. ${action} at ${entryPrice.toFixed(3)}, ` +
+      `edge=${(edge * 100).toFixed(1)}% (discounted). Kalshi: "${opp.kalshiMarket.title.slice(0, 50)}"`,
+  };
+}
+
 // ─── Main evaluation pipeline ───
 
-export async function evaluateMarket(market: UpDownMarket): Promise<ArbitrageSignal | null> {
+export async function evaluateMarket(
+  market: UpDownMarket,
+  crossPlatformOpps?: CrossPlatformOpp[]
+): Promise<ArbitrageSignal | null> {
   const symbol = ASSET_TO_SYMBOL[market.asset];
   if (!symbol) {
     log.debug("No Binance symbol for asset", { asset: market.asset });
@@ -278,42 +348,56 @@ export async function evaluateMarket(market: UpDownMarket): Promise<ArbitrageSig
 
   // Strategy 1: Latency arb
   const latencySignal = evaluateLatencyArb(market, prices, binance);
-  if (!latencySignal) return null;
 
-  // High confidence → trade immediately
-  if (latencySignal.confidence >= UPDOWN_TRADING.glmConfidenceHigh) {
-    log.info("HIGH-CONFIDENCE LATENCY ARB", {
-      asset: market.asset,
-      action: latencySignal.action,
-      edge: (latencySignal.edge * 100).toFixed(1) + "%",
-      confidence: (latencySignal.confidence * 100).toFixed(0) + "%",
-    });
-    return latencySignal;
-  }
-
-  // Medium confidence → consult GLM
-  if (latencySignal.confidence >= UPDOWN_TRADING.glmConfidenceLow) {
-    const glm = await confirmWithGLM(latencySignal);
-    latencySignal.glmConfirmed = glm.confirmed;
-
-    if (glm.confirmed) {
-      latencySignal.reasoning += ` | GLM confirmed (p=${glm.probability.toFixed(2)}): ${glm.reasoning.slice(0, 80)}`;
-      log.info("GLM-CONFIRMED LATENCY ARB", {
+  if (latencySignal) {
+    // High confidence → trade immediately
+    if (latencySignal.confidence >= UPDOWN_TRADING.glmConfidenceHigh) {
+      log.info("HIGH-CONFIDENCE LATENCY ARB", {
         asset: market.asset,
         action: latencySignal.action,
         edge: (latencySignal.edge * 100).toFixed(1) + "%",
+        confidence: (latencySignal.confidence * 100).toFixed(0) + "%",
       });
       return latencySignal;
-    } else {
-      log.info("GLM rejected signal", {
-        asset: market.asset,
-        glmProbability: glm.probability.toFixed(2),
-        reason: glm.reasoning.slice(0, 80),
-      });
-      return null; // skip
+    }
+
+    // Medium confidence → consult GLM
+    if (latencySignal.confidence >= UPDOWN_TRADING.glmConfidenceLow) {
+      const glm = await confirmWithGLM(latencySignal);
+      latencySignal.glmConfirmed = glm.confirmed;
+
+      if (glm.confirmed) {
+        latencySignal.reasoning += ` | GLM confirmed (p=${glm.probability.toFixed(2)}): ${glm.reasoning.slice(0, 80)}`;
+        log.info("GLM-CONFIRMED LATENCY ARB", {
+          asset: market.asset,
+          action: latencySignal.action,
+          edge: (latencySignal.edge * 100).toFixed(1) + "%",
+        });
+        return latencySignal;
+      } else {
+        log.info("GLM rejected signal", {
+          asset: market.asset,
+          glmProbability: glm.probability.toFixed(2),
+          reason: glm.reasoning.slice(0, 80),
+        });
+        // Don't return null — fall through to cross-platform check
+      }
     }
   }
 
-  // Low confidence → skip
+  // Strategy 3: Cross-platform arb (Kalshi vs Polymarket)
+  if (crossPlatformOpps && crossPlatformOpps.length > 0) {
+    const crossSignal = evaluateCrossPlatformArb(market, prices, crossPlatformOpps);
+    if (crossSignal) {
+      log.info("CROSS-PLATFORM ARB SIGNAL", {
+        asset: market.asset,
+        action: crossSignal.action,
+        edge: (crossSignal.edge * 100).toFixed(1) + "%",
+        confidence: (crossSignal.confidence * 100).toFixed(0) + "%",
+      });
+      return crossSignal;
+    }
+  }
+
   return null;
 }

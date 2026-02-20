@@ -24,6 +24,8 @@ async function evaluateAllMarkets(): Promise<void> {
   const markets = getActiveMarkets();
   if (markets.length === 0) return;
 
+  const crossOpps = getCrossPlatformOpps();
+
   for (const market of markets) {
     // Skip if already evaluated recently
     if (evaluatedThisCycle.has(market.marketId)) continue;
@@ -33,7 +35,7 @@ async function evaluateAllMarkets(): Promise<void> {
     setTimeout(() => evaluatedThisCycle.delete(market.marketId), 60_000);
 
     try {
-      const signal = await evaluateMarket(market);
+      const signal = await evaluateMarket(market, crossOpps);
       recordOpportunity(!!signal);
 
       if (signal) {
@@ -131,7 +133,8 @@ async function run(): Promise<void> {
       question: market.question.slice(0, 60),
     });
     try {
-      const signal = await evaluateMarket(market);
+      const crossOpps = getCrossPlatformOpps();
+      const signal = await evaluateMarket(market, crossOpps);
       recordOpportunity(!!signal);
       if (signal) executePaperTrade(signal);
     } catch (e) {

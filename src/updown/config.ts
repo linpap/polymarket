@@ -44,16 +44,20 @@ export const UPDOWN_TRADING = {
   initialBankroll: 10_000,       // $10,000 paper
   maxPositionPct: 0.05,          // 5% per trade ($500)
   maxPositionUsd: 500,           // Hard cap
-  latencyMinEdge: 0.005,         // 0.5% minimum edge for latency arb (was 1%)
-  completeSetThreshold: 0.99,    // YES + NO < $0.99 for complete-set arb (was 0.97)
-  momentumThreshold: 0.0001,     // 0.01% move = significant (was 0.03%)
-  latencyTimeRemaining: 1800,    // <30 min remaining for latency arb (was 10 min)
-  glmConfidenceLow: 0.40,        // Below this = skip (was 0.50)
-  glmConfidenceHigh: 0.55,       // Above this = trade without GLM (was 0.65)
+  latencyMinEdge: 0.003,         // 0.3% minimum edge for latency arb (was 0.5%)
+  completeSetThreshold: 0.97,    // YES + NO < $0.97 for complete-set arb (was 0.99)
+  momentumThreshold: 0.0001,     // 0.01% move = significant
+  latencyTimeRemaining: 600,     // <10 min remaining for latency arb (was 30 min)
+  glmConfidenceLow: 0.40,        // Below this = skip
+  glmConfidenceHigh: 0.52,       // Above this = trade without GLM (was 0.55)
   latencyConfidentPrice: 0.90,   // YES price threshold for high-confidence latency arb
   priceWindowSeconds: 300,       // 5-minute rolling window
   momentumWindowSeconds: 120,    // 2-minute momentum check
   statusLogIntervalMs: 30_000,   // Log status every 30s
+  // Cross-platform (Kalshi vs Polymarket)
+  crossPlatformMinSpread: 0.10,  // 10% minimum spread to consider
+  crossPlatformKalshiMin: 0.65,  // Kalshi YES must be >0.65 (or <0.35 for NO)
+  crossPlatformEdgeDiscount: 0.5, // Discount edge 50% (markets aren't identical)
 } as const;
 
 // ─── State file paths ───
