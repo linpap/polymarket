@@ -263,21 +263,33 @@ export function evaluateCrossPlatformArb(
   let entryPrice: number;
   let edge: number;
 
+  // In binary markets, the NO book is often illiquid. Use synthetic pricing:
+  // Effective YES cost = yesBook.bestAsk (buy YES directly)
+  // Effective NO cost = 1 - yesBook.bestBid (sell YES = equivalent to buying NO)
+  // Skip illiquid markets — if bid-ask spread is too wide, no real makers
+  if (prices.yesBook.spread > 0.10 && prices.noBook.spread > 0.10) return null;
+
+  // In binary markets, the NO book is often illiquid. Use synthetic pricing:
+  // Effective YES cost = yesBook.bestAsk (buy YES directly)
+  // Effective NO cost = 1 - yesBook.bestBid (sell YES = equivalent to buying NO)
+  const effectiveYesAsk = prices.yesBook.bestAsk;
+  const effectiveNoAsk = Math.min(prices.noBook.bestAsk, 1 - prices.yesBook.bestBid);
+
   if (kalshiYes > UPDOWN_TRADING.crossPlatformKalshiMin) {
     // Kalshi strongly favors YES → buy YES on Poly if it's cheap
     action = "buy-yes";
-    entryPrice = prices.yesBook.bestAsk;
-    if (entryPrice > 0.55) return null; // not cheap enough
+    entryPrice = effectiveYesAsk;
+    if (entryPrice > 0.55) return null;
     edge = (kalshiYes - entryPrice) * UPDOWN_TRADING.crossPlatformEdgeDiscount;
   } else if (kalshiYes < (1 - UPDOWN_TRADING.crossPlatformKalshiMin)) {
     // Kalshi strongly against YES → buy NO on Poly if it's cheap
     action = "buy-no";
-    entryPrice = prices.noBook.bestAsk;
-    if (entryPrice > 0.55) return null; // not cheap enough
+    entryPrice = effectiveNoAsk;
+    if (entryPrice > 0.55) return null;
     const kalshiNo = 1 - kalshiYes;
     edge = (kalshiNo - entryPrice) * UPDOWN_TRADING.crossPlatformEdgeDiscount;
   } else {
-    return null; // Kalshi signal not decisive enough
+    return null;
   }
 
   if (edge < UPDOWN_TRADING.latencyMinEdge) return null;
@@ -334,6 +346,11 @@ export async function evaluateMarket(
   // Update market with live prices
   market.currentYes = prices.yesBook.midpoint;
   market.currentNo = prices.noBook.midpoint;
+
+  // Skip completely illiquid markets (both books have huge spread)
+  if (prices.yesBook.spread > 0.50 && prices.noBook.spread > 0.50) {
+    return null;
+  }
 
   // Strategy 2: Complete-set (check first — guaranteed profit)
   const completeSetSignal = evaluateCompleteSet(market, prices);
