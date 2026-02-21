@@ -33,10 +33,13 @@ function parseAssetFromSlug(slug: string): string | null {
 }
 
 function parseAssetFromQuestion(question: string): string | null {
+  // Only match Up/Down style questions to avoid false positives
+  // (e.g. "Netherlands" contains "eth")
   const q = question.toLowerCase();
+  if (!q.includes("up or down") && !q.includes("up/down")) return null;
   if (q.includes("bitcoin") || q.includes("btc")) return "BTC";
   if (q.includes("ethereum") || q.includes("eth")) return "ETH";
-  if (q.includes("solana") || q.includes("sol ")) return "SOL";
+  if (q.includes("solana") || q.includes("sol")) return "SOL";
   if (q.includes("xrp")) return "XRP";
   return null;
 }
@@ -143,11 +146,15 @@ async function fetchUpDownMarkets(): Promise<UpDownMarket[]> {
   const allMarkets: UpDownMarket[] = [];
 
   // The Up/Down markets are discoverable via /events, not /markets
+  // Need multiple queries: newest-created events (tomorrow's markets) AND
+  // soonest-expiring events (tonight's markets about to expire that we can actually trade)
   const urls = [
-    // Primary: tagged "up-or-down" events
-    `${GAMMA_API}/events?tag=up-or-down&active=true&closed=false&limit=50&order=startDate&ascending=false`,
-    // Fallback: crypto-tagged events sorted by recency
-    `${GAMMA_API}/events?tag=crypto&active=true&closed=false&limit=50&order=startDate&ascending=false`,
+    // Primary: newest up-or-down events (gets tomorrow's pipeline)
+    `${GAMMA_API}/events?tag=up-or-down&active=true&closed=false&limit=200&order=startDate&ascending=false`,
+    // Critical: soonest-expiring events — catches tonight's markets within trading window
+    `${GAMMA_API}/events?tag=up-or-down&active=true&closed=false&limit=200&order=endDate&ascending=true`,
+    // Fallback: crypto-tagged events
+    `${GAMMA_API}/events?tag=crypto&active=true&closed=false&limit=100&order=startDate&ascending=false`,
   ];
 
   for (const url of urls) {
