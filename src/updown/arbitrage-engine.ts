@@ -92,18 +92,18 @@ function estimatedFinalValue(magnitude: number, timeRemaining: number): number {
   // the outcome is likely locked in. Estimate the resolution value.
   // Larger moves + less time = higher estimated value near 1.0
   const timeDecay = Math.max(0, 1 - timeRemaining / UPDOWN_TRADING.latencyTimeRemaining); // 0 at gate, 1 at 0s
-  const magnitudeScore = Math.min(1, magnitude / 0.0005); // caps at 0.05% move (more sensitive)
-  const estimated = 0.5 + 0.40 * timeDecay * magnitudeScore;
+  const magnitudeScore = Math.min(1, magnitude / 0.0003); // caps at 0.03% move (was 0.05%)
+  const estimated = 0.55 + 0.35 * timeDecay * magnitudeScore; // base 0.55 (was 0.50)
   // Give meaningful credit for pure magnitude even with time left
   const magnitudeBonus = Math.min(0.20, magnitude * 100);
   return Math.min(0.98, estimated + magnitudeBonus);
 }
 
 function computeConfidence(magnitude: number, timeRemaining: number, entryPrice: number): number {
-  let conf = 0.40; // start lower (was 0.5)
-  // More magnitude = more confidence
-  if (magnitude > 0.0001) conf += 0.05;
-  if (magnitude > 0.0003) conf += 0.05;
+  let conf = 0.42; // base (was 0.40)
+  // More magnitude = more confidence (lower thresholds)
+  if (magnitude > 0.00005) conf += 0.05; // 0.005% move (was 0.01%)
+  if (magnitude > 0.0002) conf += 0.05;
   if (magnitude > 0.0005) conf += 0.05;
   if (magnitude > 0.001) conf += 0.1;
   if (magnitude > 0.003) conf += 0.1;
@@ -279,13 +279,13 @@ export function evaluateCrossPlatformArb(
     // Kalshi strongly favors YES → buy YES on Poly if it's cheap
     action = "buy-yes";
     entryPrice = effectiveYesAsk;
-    if (entryPrice > 0.55) return null;
+    if (entryPrice > 0.75) return null;
     edge = (kalshiYes - entryPrice) * UPDOWN_TRADING.crossPlatformEdgeDiscount;
   } else if (kalshiYes < (1 - UPDOWN_TRADING.crossPlatformKalshiMin)) {
     // Kalshi strongly against YES → buy NO on Poly if it's cheap
     action = "buy-no";
     entryPrice = effectiveNoAsk;
-    if (entryPrice > 0.55) return null;
+    if (entryPrice > 0.75) return null;
     const kalshiNo = 1 - kalshiYes;
     edge = (kalshiNo - entryPrice) * UPDOWN_TRADING.crossPlatformEdgeDiscount;
   } else {
@@ -378,7 +378,7 @@ export async function evaluateMarket(
       return latencySignal;
     }
 
-    // Medium confidence → consult GLM
+    // Medium confidence → consult GLM, but still trade if GLM unavailable
     if (latencySignal.confidence >= UPDOWN_TRADING.glmConfidenceLow) {
       const glm = await confirmWithGLM(latencySignal);
       latencySignal.glmConfirmed = glm.confirmed;
@@ -391,6 +391,19 @@ export async function evaluateMarket(
           edge: (latencySignal.edge * 100).toFixed(1) + "%",
         });
         return latencySignal;
+      } else if (glm.reasoning.startsWith("No API key") || glm.reasoning.startsWith("API error") || glm.reasoning.startsWith("Error:")) {
+        // GLM unavailable — still trade at reduced confidence if signal is decent
+        if (latencySignal.confidence >= 0.40 && latencySignal.edge >= 0.005) {
+          latencySignal.reasoning += ` | GLM unavailable, trading at reduced confidence`;
+          log.info("LATENCY ARB (GLM UNAVAILABLE)", {
+            asset: market.asset,
+            action: latencySignal.action,
+            edge: (latencySignal.edge * 100).toFixed(1) + "%",
+            confidence: (latencySignal.confidence * 100).toFixed(0) + "%",
+          });
+          return latencySignal;
+        }
+        // Don't return null — fall through to cross-platform check
       } else {
         log.info("GLM rejected signal", {
           asset: market.asset,

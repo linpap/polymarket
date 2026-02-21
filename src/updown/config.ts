@@ -45,11 +45,11 @@ export const UPDOWN_TRADING = {
   maxPositionPct: 0.05,          // 5% per trade ($500)
   maxPositionUsd: 500,           // Hard cap
   latencyMinEdge: 0.003,         // 0.3% minimum edge for latency arb (was 0.5%)
-  completeSetThreshold: 0.97,    // YES + NO < $0.97 for complete-set arb (was 0.99)
-  momentumThreshold: 0.0001,     // 0.01% move = significant
-  latencyTimeRemaining: 600,     // <10 min remaining for latency arb (was 30 min)
-  glmConfidenceLow: 0.40,        // Below this = skip
-  glmConfidenceHigh: 0.52,       // Above this = trade without GLM (was 0.55)
+  completeSetThreshold: 0.995,   // YES + NO < $0.995 for complete-set arb (only if actually profitable)
+  momentumThreshold: 0.00005,    // 0.005% move = significant (was 0.01%)
+  latencyTimeRemaining: 1800,    // <30 min remaining for latency arb (was 10 min)
+  glmConfidenceLow: 0.35,        // Below this = skip (was 0.40)
+  glmConfidenceHigh: 0.45,       // Above this = trade without GLM (was 0.52)
   latencyConfidentPrice: 0.90,   // YES price threshold for high-confidence latency arb
   priceWindowSeconds: 300,       // 5-minute rolling window
   momentumWindowSeconds: 120,    // 2-minute momentum check

@@ -31,8 +31,8 @@ async function evaluateAllMarkets(): Promise<void> {
     if (evaluatedThisCycle.has(market.marketId)) continue;
     evaluatedThisCycle.add(market.marketId);
 
-    // Clear evaluated set periodically (every 60s)
-    setTimeout(() => evaluatedThisCycle.delete(market.marketId), 60_000);
+    // Clear evaluated set periodically (every 15s to catch peak momentum)
+    setTimeout(() => evaluatedThisCycle.delete(market.marketId), 15_000);
 
     try {
       const signal = await evaluateMarket(market, crossOpps);
