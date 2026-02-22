@@ -6,9 +6,10 @@ import path from "path";
 export const NVIDIA_API_KEY = process.env.NVIDIA_API_KEY || "";
 export const LOG_LEVEL = process.env.LOG_LEVEL || "info";
 
-// ─── Binance WebSocket ───
+// ─── Coinbase WebSocket (replaces Binance — geo-blocked on US GitHub Actions runners) ───
 
-export const BINANCE_WS_URL = "wss://stream.binance.com:9443/ws";
+export const COINBASE_WS_URL = "wss://ws-feed.exchange.coinbase.com";
+export const COINBASE_PRODUCT_IDS = ["BTC-USD", "ETH-USD", "SOL-USD"];
 export const TRACKED_SYMBOLS = ["btcusdt", "ethusdt", "solusdt"] as const;
 export type TrackedSymbol = (typeof TRACKED_SYMBOLS)[number];
 

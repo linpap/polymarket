@@ -1,9 +1,16 @@
 import WebSocket from "ws";
 import { createLogger } from "../logger";
-import { BINANCE_WS_URL, TRACKED_SYMBOLS, TrackedSymbol, UPDOWN_TRADING } from "./config";
+import { COINBASE_WS_URL, COINBASE_PRODUCT_IDS, TRACKED_SYMBOLS, TrackedSymbol, UPDOWN_TRADING } from "./config";
 import { BinancePrice, PriceTick } from "./types";
 
 const log = createLogger("binance-feed");
+
+// Map Coinbase product_id → downstream symbol (e.g. "BTC-USD" → "btcusdt")
+const PRODUCT_TO_SYMBOL: Record<string, TrackedSymbol> = {
+  "BTC-USD": "btcusdt",
+  "ETH-USD": "ethusdt",
+  "SOL-USD": "solusdt",
+};
 
 // Rolling price windows per symbol
 const priceWindows: Map<string, PriceTick[]> = new Map();
@@ -47,10 +54,12 @@ function getMomentumDirection(change1m: number): "up" | "down" | "flat" {
   return "flat";
 }
 
-function handleTrade(data: { s: string; p: string; T: number }): void {
-  const symbol = data.s.toLowerCase() as TrackedSymbol;
-  const price = parseFloat(data.p);
-  const timestamp = data.T;
+function handleMatch(productId: string, priceStr: string, timeStr: string): void {
+  const symbol = PRODUCT_TO_SYMBOL[productId];
+  if (!symbol) return;
+
+  const price = parseFloat(priceStr);
+  const timestamp = new Date(timeStr).getTime();
 
   if (!priceWindows.has(symbol)) {
     priceWindows.set(symbol, []);
@@ -86,38 +95,40 @@ function handleTrade(data: { s: string; p: string; T: number }): void {
 }
 
 function connect(): void {
-  const streams = TRACKED_SYMBOLS.map((s) => `${s}@trade`).join("/");
-  const url = `${BINANCE_WS_URL}/${streams}`;
-
-  log.info("Connecting to Binance WebSocket", { url });
-  ws = new WebSocket(url);
+  log.info("Connecting to Coinbase WebSocket", { url: COINBASE_WS_URL });
+  ws = new WebSocket(COINBASE_WS_URL);
 
   ws.on("open", () => {
-    log.info("Binance WebSocket connected");
+    log.info("Coinbase WebSocket connected");
+    // Subscribe to match channel for trade data
+    const subscribeMsg = JSON.stringify({
+      type: "subscribe",
+      product_ids: COINBASE_PRODUCT_IDS,
+      channels: ["matches"],
+    });
+    ws!.send(subscribeMsg);
+    log.info("Subscribed to Coinbase matches", { products: COINBASE_PRODUCT_IDS });
   });
 
   ws.on("message", (raw: Buffer) => {
     try {
       const msg = JSON.parse(raw.toString());
-      // Combined stream format: { stream: "btcusdt@trade", data: { ... } }
-      if (msg.data && msg.data.e === "trade") {
-        handleTrade(msg.data);
-      } else if (msg.e === "trade") {
-        // Single stream format
-        handleTrade(msg);
+      if (msg.type === "match" || msg.type === "last_match") {
+        handleMatch(msg.product_id, msg.price, msg.time);
       }
+      // Ignore subscriptions, heartbeats, errors etc.
     } catch (e) {
-      // Ignore parse errors for non-trade messages
+      // Ignore parse errors
     }
   });
 
   ws.on("close", () => {
-    log.warn("Binance WebSocket disconnected");
+    log.warn("Coinbase WebSocket disconnected");
     scheduleReconnect();
   });
 
   ws.on("error", (err: Error) => {
-    log.error("Binance WebSocket error", err.message);
+    log.error("Coinbase WebSocket error", err.message);
     ws?.close();
   });
 }
@@ -126,7 +137,7 @@ function scheduleReconnect(): void {
   if (!running) return;
   if (reconnectTimer) clearTimeout(reconnectTimer);
   reconnectTimer = setTimeout(() => {
-    log.info("Reconnecting to Binance...");
+    log.info("Reconnecting to Coinbase...");
     connect();
   }, 3000);
 }
