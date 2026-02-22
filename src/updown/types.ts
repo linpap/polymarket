@@ -115,6 +115,10 @@ export interface KalshiMarket {
   yes_bid: number;
   no_bid: number;
   close_time: string;
+  open_time: string;
+  close_time_ms: number;   // unix ms for easy comparison
+  open_time_ms: number;    // unix ms for easy comparison
+  floor_strike: number;    // reference price the market is benchmarked against
   status: string;
 }
 
