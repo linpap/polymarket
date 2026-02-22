@@ -74,6 +74,19 @@ export function saveState(): void {
 // ─── Paper trade execution ───
 
 export function executePaperTrade(signal: ArbitrageSignal): PaperTrade | null {
+  // Max 1 open position per asset to prevent bankroll drain
+  const assetPositions = state.openPositions.filter(
+    p => p.market.asset === signal.market.asset
+  );
+  if (assetPositions.length >= 1) {
+    return null; // already have an open position for this asset
+  }
+
+  // Max 3 total open positions across all assets
+  if (state.openPositions.length >= 3) {
+    return null;
+  }
+
   // Calculate position size
   let size: number;
   if (signal.type === "complete-set") {
