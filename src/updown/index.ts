@@ -3,7 +3,7 @@ import { createLogger } from "../logger";
 import { UPDOWN_TRADING } from "./config";
 import { startFeed, stopFeed, hasPriceData, getAllPrices, onPriceMove } from "./binance-feed";
 import { startScanner, stopScanner, getActiveMarkets, onNewMarket } from "./market-scanner";
-import { evaluateMarket } from "./arbitrage-engine";
+import { evaluateMarket, getSkipReasons, resetSkipReasons } from "./arbitrage-engine";
 import { startKalshiMonitor, stopKalshiMonitor, getKalshiMarkets, getCrossPlatformOpps } from "./kalshi-monitor";
 import {
   loadState, saveState, executePaperTrade, resolveExpired,
@@ -83,6 +83,14 @@ function logStatus(): void {
   console.log(`  Prices: ${priceStr || "Waiting for data..."}`);
   console.log("─".repeat(80));
 
+  // Skip-reason breakdown
+  const reasons = getSkipReasons();
+  const reasonEntries = Object.entries(reasons).sort((a, b) => b[1] - a[1]);
+  if (reasonEntries.length > 0) {
+    const top5 = reasonEntries.slice(0, 5).map(([r, n]) => `${r}:${n}`).join(", ");
+    console.log(`  Skip reasons: ${top5}`);
+  }
+
   // Per-strategy breakdown
   for (const [strat, data] of Object.entries(stats.byStrategy)) {
     if (data.trades > 0) {
@@ -127,20 +135,35 @@ async function run(): Promise<void> {
   startKalshiMonitor(getActiveMarkets);
 
   // Register event handlers
-  onNewMarket(async (market: UpDownMarket) => {
+  // Queue new markets for evaluation instead of firing concurrent CLOB calls
+  const pendingNewMarkets: UpDownMarket[] = [];
+  let processingNew = false;
+
+  onNewMarket((market: UpDownMarket) => {
     log.info("Evaluating new market immediately", {
       asset: market.asset,
       question: market.question.slice(0, 60),
     });
-    try {
-      const crossOpps = getCrossPlatformOpps();
-      const signal = await evaluateMarket(market, crossOpps);
-      recordOpportunity(!!signal);
-      if (signal) executePaperTrade(signal);
-    } catch (e) {
-      log.error("Error on new market", (e as Error).message);
-    }
+    pendingNewMarkets.push(market);
+    processNewMarkets();
   });
+
+  async function processNewMarkets(): Promise<void> {
+    if (processingNew) return; // already processing
+    processingNew = true;
+    while (pendingNewMarkets.length > 0) {
+      const market = pendingNewMarkets.shift()!;
+      try {
+        const crossOpps = getCrossPlatformOpps();
+        const signal = await evaluateMarket(market, crossOpps);
+        recordOpportunity(!!signal);
+        if (signal) executePaperTrade(signal);
+      } catch (e) {
+        log.error("Error on new market", (e as Error).message);
+      }
+    }
+    processingNew = false;
+  }
 
   onPriceMove(async (_symbol: string, _price) => {
     // Re-evaluate all active markets when price moves significantly

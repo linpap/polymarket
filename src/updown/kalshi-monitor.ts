@@ -123,6 +123,8 @@ async function poll(polyMarkets: UpDownMarket[]): Promise<void> {
 
     const opps = findCrossPlatformArb(polyMarkets);
     if (opps.length > 0) {
+      // Replace stale opps instead of appending forever
+      crossPlatformOpps.length = 0;
       for (const opp of opps) {
         log.info("CROSS-PLATFORM OPPORTUNITY", {
           poly: opp.polyMarket.question.slice(0, 60),

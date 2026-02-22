@@ -4,6 +4,12 @@ import { UpDownMarket, OrderBookSummary, MarketPrices } from "./types";
 
 const log = createLogger("clob-reader");
 
+let clobErrors = 0;
+
+export function getClobErrorCount(): number {
+  return clobErrors;
+}
+
 // ─── CLOB order book reading (no auth required) ───
 
 async function fetchOrderBook(tokenId: string): Promise<OrderBookSummary> {
@@ -40,8 +46,11 @@ export async function getOrderBook(tokenId: string): Promise<OrderBookSummary> {
   try {
     return await fetchOrderBook(tokenId);
   } catch (e) {
-    log.error("Failed to fetch order book", { tokenId, error: (e as Error).message });
-    // Return a fallback with wide spread
+    clobErrors++;
+    if (clobErrors <= 5 || clobErrors % 50 === 0) {
+      log.info("CLOB fetch failed", { tokenId: tokenId.slice(0, 20) + "...", error: (e as Error).message, totalErrors: clobErrors });
+    }
+    // Return a fallback with wide spread (arb-engine detects this and uses scanner prices)
     return {
       tokenId,
       bestBid: 0,

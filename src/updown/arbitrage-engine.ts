@@ -6,6 +6,25 @@ import { getBestPrices } from "./clob-reader";
 
 const log = createLogger("arb-engine");
 
+// ─── Skip-reason tracking ───
+
+const skipReasons: Record<string, number> = {};
+
+function trackSkip(reason: string): null {
+  skipReasons[reason] = (skipReasons[reason] || 0) + 1;
+  return null;
+}
+
+export function getSkipReasons(): Record<string, number> {
+  return { ...skipReasons };
+}
+
+export function resetSkipReasons(): void {
+  for (const key of Object.keys(skipReasons)) {
+    delete skipReasons[key];
+  }
+}
+
 // ─── Strategy 1: Latency Arbitrage ───
 // Binance price has moved significantly, Polymarket hasn't caught up yet
 
@@ -237,7 +256,7 @@ Respond with ONLY a JSON object:
   }
 }
 
-// ─── Strategy 3: Cross-Platform Arbitrage ───
+// ─── Strategy 4: Cross-Platform Arbitrage ───
 // Kalshi price diverges significantly from Polymarket → trade with the stronger signal
 
 export function evaluateCrossPlatformArb(
@@ -263,17 +282,11 @@ export function evaluateCrossPlatformArb(
   let entryPrice: number;
   let edge: number;
 
-  // In binary markets, the NO book is often illiquid. Use synthetic pricing:
-  // Effective YES cost = yesBook.bestAsk (buy YES directly)
-  // Effective NO cost = 1 - yesBook.bestBid (sell YES = equivalent to buying NO)
-  // Skip illiquid markets — if bid-ask spread is too wide, no real makers
-  if (prices.yesBook.spread > 0.10 && prices.noBook.spread > 0.10) return null;
-
-  // In binary markets, the NO book is often illiquid. Use synthetic pricing:
-  // Effective YES cost = yesBook.bestAsk (buy YES directly)
-  // Effective NO cost = 1 - yesBook.bestBid (sell YES = equivalent to buying NO)
+  // Use effective pricing (handles illiquid NO books via synthetic pricing)
   const effectiveYesAsk = prices.yesBook.bestAsk;
-  const effectiveNoAsk = Math.min(prices.noBook.bestAsk, 1 - prices.yesBook.bestBid);
+  const effectiveNoAsk = prices.yesBook.bestBid > 0
+    ? Math.min(prices.noBook.bestAsk, 1 - prices.yesBook.bestBid)
+    : prices.noBook.bestAsk;
 
   if (kalshiYes > UPDOWN_TRADING.crossPlatformKalshiMin) {
     // Kalshi strongly favors YES → buy YES on Poly if it's cheap
@@ -316,6 +329,30 @@ export function evaluateCrossPlatformArb(
   };
 }
 
+// ─── Construct fallback prices from scanner data ───
+
+function fallbackPrices(market: UpDownMarket): MarketPrices {
+  const yesPrice = market.currentYes || 0.50;
+  const noPrice = market.currentNo || 0.50;
+  return {
+    yesBook: {
+      tokenId: market.yesTokenId,
+      bestBid: Math.max(0.01, yesPrice - 0.01),
+      bestAsk: Math.min(0.99, yesPrice + 0.01),
+      midpoint: yesPrice,
+      spread: 0.02,
+    },
+    noBook: {
+      tokenId: market.noTokenId,
+      bestBid: Math.max(0.01, noPrice - 0.01),
+      bestAsk: Math.min(0.99, noPrice + 0.01),
+      midpoint: noPrice,
+      spread: 0.02,
+    },
+    combinedAsk: Math.min(0.99, yesPrice + 0.01) + Math.min(0.99, noPrice + 0.01),
+  };
+}
+
 // ─── Main evaluation pipeline ───
 
 export async function evaluateMarket(
@@ -324,14 +361,12 @@ export async function evaluateMarket(
 ): Promise<ArbitrageSignal | null> {
   const symbol = ASSET_TO_SYMBOL[market.asset];
   if (!symbol) {
-    log.debug("No Binance symbol for asset", { asset: market.asset });
-    return null;
+    return trackSkip("no-symbol");
   }
 
   const binance = getPrice(symbol);
   if (!binance) {
-    log.debug("No Binance price data yet for", { symbol });
-    return null;
+    return trackSkip("no-price-data");
   }
 
   // Get fresh order book
@@ -340,7 +375,14 @@ export async function evaluateMarket(
     prices = await getBestPrices(market);
   } catch (e) {
     log.error("Failed to get prices for market", { marketId: market.marketId });
-    return null;
+    return trackSkip("clob-error");
+  }
+
+  // Detect CLOB fallback (both books with spread >= 0.99 means API failed)
+  // Use scanner prices instead of silently skipping
+  const clobFailed = prices.yesBook.spread >= 0.99 && prices.noBook.spread >= 0.99;
+  if (clobFailed) {
+    prices = fallbackPrices(market);
   }
 
   // Update market with live prices
@@ -348,8 +390,9 @@ export async function evaluateMarket(
   market.currentNo = prices.noBook.midpoint;
 
   // Skip completely illiquid markets (both books have huge spread)
-  if (prices.yesBook.spread > 0.50 && prices.noBook.spread > 0.50) {
-    return null;
+  // But don't skip if we're using fallback prices (spread=0.02)
+  if (!clobFailed && prices.yesBook.spread > 0.50 && prices.noBook.spread > 0.50) {
+    return trackSkip("illiquid-books");
   }
 
   // Strategy 2: Complete-set (check first — guaranteed profit)
@@ -429,5 +472,17 @@ export async function evaluateMarket(
     }
   }
 
-  return null;
+  // Track why no signal was produced
+  const now = Date.now();
+  const timeRemaining = (market.windowEnd - now) / 1000;
+  if (timeRemaining > UPDOWN_TRADING.latencyTimeRemaining) {
+    return trackSkip("too-far-from-expiry");
+  }
+  if (timeRemaining < 10) {
+    return trackSkip("too-close-to-expiry");
+  }
+  if (Math.abs(binance.change1m) < UPDOWN_TRADING.momentumThreshold) {
+    return trackSkip("flat-momentum");
+  }
+  return trackSkip("no-edge");
 }
