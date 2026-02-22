@@ -385,82 +385,85 @@ export async function evaluateMarket(
     prices = fallbackPrices(market);
   }
 
-  // Update market with live prices
-  market.currentYes = prices.yesBook.midpoint;
-  market.currentNo = prices.noBook.midpoint;
-
-  // Skip completely illiquid markets (both books have huge spread)
-  // But don't skip if we're using fallback prices (spread=0.02)
-  if (!clobFailed && prices.yesBook.spread > 0.50 && prices.noBook.spread > 0.50) {
-    return trackSkip("illiquid-books");
+  // Update market with live prices (only if CLOB returned real data)
+  if (!clobFailed) {
+    market.currentYes = prices.yesBook.midpoint;
+    market.currentNo = prices.noBook.midpoint;
   }
 
-  // Strategy 2: Complete-set (check first — guaranteed profit)
-  const completeSetSignal = evaluateCompleteSet(market, prices);
-  if (completeSetSignal) {
-    log.info("COMPLETE-SET ARB FOUND", {
-      asset: market.asset,
-      combined: prices.combinedAsk.toFixed(3),
-      edge: (completeSetSignal.edge * 100).toFixed(1) + "%",
-    });
-    return completeSetSignal;
-  }
+  const booksIlliquid = !clobFailed && prices.yesBook.spread > 0.50 && prices.noBook.spread > 0.50;
 
-  // Strategy 1: Latency arb
-  const latencySignal = evaluateLatencyArb(market, prices, binance);
-
-  if (latencySignal) {
-    // High confidence → trade immediately
-    if (latencySignal.confidence >= UPDOWN_TRADING.glmConfidenceHigh) {
-      log.info("HIGH-CONFIDENCE LATENCY ARB", {
+  // Strategies that need good order book data — skip if illiquid
+  if (!booksIlliquid) {
+    // Strategy 2: Complete-set (check first — guaranteed profit)
+    const completeSetSignal = evaluateCompleteSet(market, prices);
+    if (completeSetSignal) {
+      log.info("COMPLETE-SET ARB FOUND", {
         asset: market.asset,
-        action: latencySignal.action,
-        edge: (latencySignal.edge * 100).toFixed(1) + "%",
-        confidence: (latencySignal.confidence * 100).toFixed(0) + "%",
+        combined: prices.combinedAsk.toFixed(3),
+        edge: (completeSetSignal.edge * 100).toFixed(1) + "%",
       });
-      return latencySignal;
+      return completeSetSignal;
     }
 
-    // Medium confidence → consult GLM, but still trade if GLM unavailable
-    if (latencySignal.confidence >= UPDOWN_TRADING.glmConfidenceLow) {
-      const glm = await confirmWithGLM(latencySignal);
-      latencySignal.glmConfirmed = glm.confirmed;
+    // Strategy 1: Latency arb
+    const latencySignal = evaluateLatencyArb(market, prices, binance);
 
-      if (glm.confirmed) {
-        latencySignal.reasoning += ` | GLM confirmed (p=${glm.probability.toFixed(2)}): ${glm.reasoning.slice(0, 80)}`;
-        log.info("GLM-CONFIRMED LATENCY ARB", {
+    if (latencySignal) {
+      // High confidence → trade immediately
+      if (latencySignal.confidence >= UPDOWN_TRADING.glmConfidenceHigh) {
+        log.info("HIGH-CONFIDENCE LATENCY ARB", {
           asset: market.asset,
           action: latencySignal.action,
           edge: (latencySignal.edge * 100).toFixed(1) + "%",
+          confidence: (latencySignal.confidence * 100).toFixed(0) + "%",
         });
         return latencySignal;
-      } else if (glm.reasoning.startsWith("No API key") || glm.reasoning.startsWith("API error") || glm.reasoning.startsWith("Error:")) {
-        // GLM unavailable — still trade at reduced confidence if signal is decent
-        if (latencySignal.confidence >= 0.40 && latencySignal.edge >= 0.005) {
-          latencySignal.reasoning += ` | GLM unavailable, trading at reduced confidence`;
-          log.info("LATENCY ARB (GLM UNAVAILABLE)", {
+      }
+
+      // Medium confidence → consult GLM, but still trade if GLM unavailable
+      if (latencySignal.confidence >= UPDOWN_TRADING.glmConfidenceLow) {
+        const glm = await confirmWithGLM(latencySignal);
+        latencySignal.glmConfirmed = glm.confirmed;
+
+        if (glm.confirmed) {
+          latencySignal.reasoning += ` | GLM confirmed (p=${glm.probability.toFixed(2)}): ${glm.reasoning.slice(0, 80)}`;
+          log.info("GLM-CONFIRMED LATENCY ARB", {
             asset: market.asset,
             action: latencySignal.action,
             edge: (latencySignal.edge * 100).toFixed(1) + "%",
-            confidence: (latencySignal.confidence * 100).toFixed(0) + "%",
           });
           return latencySignal;
+        } else if (glm.reasoning.startsWith("No API key") || glm.reasoning.startsWith("API error") || glm.reasoning.startsWith("Error:")) {
+          // GLM unavailable — still trade at reduced confidence if signal is decent
+          if (latencySignal.confidence >= 0.40 && latencySignal.edge >= 0.005) {
+            latencySignal.reasoning += ` | GLM unavailable, trading at reduced confidence`;
+            log.info("LATENCY ARB (GLM UNAVAILABLE)", {
+              asset: market.asset,
+              action: latencySignal.action,
+              edge: (latencySignal.edge * 100).toFixed(1) + "%",
+              confidence: (latencySignal.confidence * 100).toFixed(0) + "%",
+            });
+            return latencySignal;
+          }
+        } else {
+          log.info("GLM rejected signal", {
+            asset: market.asset,
+            glmProbability: glm.probability.toFixed(2),
+            reason: glm.reasoning.slice(0, 80),
+          });
         }
-        // Don't return null — fall through to cross-platform check
-      } else {
-        log.info("GLM rejected signal", {
-          asset: market.asset,
-          glmProbability: glm.probability.toFixed(2),
-          reason: glm.reasoning.slice(0, 80),
-        });
-        // Don't return null — fall through to cross-platform check
       }
     }
   }
 
   // Strategy 3: Cross-platform arb (Kalshi vs Polymarket)
+  // Uses scanner prices (market.currentYes/No) — works even with illiquid CLOB books
   if (crossPlatformOpps && crossPlatformOpps.length > 0) {
-    const crossSignal = evaluateCrossPlatformArb(market, prices, crossPlatformOpps);
+    // Use scanner-based prices for cross-platform (not CLOB) since Gamma API
+    // midpoints are more reliable than illiquid order books for far-future markets
+    const crossPrices = booksIlliquid || clobFailed ? fallbackPrices(market) : prices;
+    const crossSignal = evaluateCrossPlatformArb(market, crossPrices, crossPlatformOpps);
     if (crossSignal) {
       log.info("CROSS-PLATFORM ARB SIGNAL", {
         asset: market.asset,
@@ -473,6 +476,9 @@ export async function evaluateMarket(
   }
 
   // Track why no signal was produced
+  if (booksIlliquid) {
+    return trackSkip("illiquid-books");
+  }
   const now = Date.now();
   const timeRemaining = (market.windowEnd - now) / 1000;
   if (timeRemaining > UPDOWN_TRADING.latencyTimeRemaining) {
