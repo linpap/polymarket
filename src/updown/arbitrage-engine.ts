@@ -111,8 +111,8 @@ function estimatedFinalValue(magnitude: number, timeRemaining: number): number {
   // the outcome is likely locked in. Estimate the resolution value.
   // Larger moves + less time = higher estimated value near 1.0
   const timeDecay = Math.max(0, 1 - timeRemaining / UPDOWN_TRADING.latencyTimeRemaining); // 0 at gate, 1 at 0s
-  const magnitudeScore = Math.min(1, magnitude / 0.0003); // caps at 0.03% move (was 0.05%)
-  const estimated = 0.55 + 0.35 * timeDecay * magnitudeScore; // base 0.55 (was 0.50)
+  const magnitudeScore = Math.min(1, magnitude / 0.0001); // caps at 0.01% move (smaller moves get full credit)
+  const estimated = 0.60 + 0.30 * timeDecay * magnitudeScore; // base 0.60 (higher base = more signals pass edge gate)
   // Give meaningful credit for pure magnitude even with time left
   const magnitudeBonus = Math.min(0.20, magnitude * 100);
   return Math.min(0.98, estimated + magnitudeBonus);
@@ -237,8 +237,8 @@ Respond with ONLY a JSON object:
     const reasoning = parsed.reasoning || "No reasoning provided";
 
     // Confirm if GLM probability aligns with our signal
-    const glmFavorsYes = probability > 0.55;
-    const glmFavorsNo = probability < 0.45;
+    const glmFavorsYes = probability > 0.52;
+    const glmFavorsNo = probability < 0.48;
     const ourSideIsYes = signal.action === "buy-yes";
 
     const confirmed = ourSideIsYes ? glmFavorsYes : glmFavorsNo;
@@ -391,7 +391,7 @@ export async function evaluateMarket(
     market.currentNo = prices.noBook.midpoint;
   }
 
-  const booksIlliquid = !clobFailed && prices.yesBook.spread > 0.50 && prices.noBook.spread > 0.50;
+  const booksIlliquid = !clobFailed && prices.yesBook.spread > 0.80 && prices.noBook.spread > 0.80;
 
   // Strategies that need good order book data — skip if illiquid
   if (!booksIlliquid) {
@@ -436,7 +436,7 @@ export async function evaluateMarket(
           return latencySignal;
         } else if (glm.reasoning.startsWith("No API key") || glm.reasoning.startsWith("API error") || glm.reasoning.startsWith("Error:")) {
           // GLM unavailable — still trade at reduced confidence if signal is decent
-          if (latencySignal.confidence >= 0.40 && latencySignal.edge >= 0.005) {
+          if (latencySignal.confidence >= 0.35 && latencySignal.edge >= 0.002) {
             latencySignal.reasoning += ` | GLM unavailable, trading at reduced confidence`;
             log.info("LATENCY ARB (GLM UNAVAILABLE)", {
               asset: market.asset,
