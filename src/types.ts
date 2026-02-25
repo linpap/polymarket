@@ -1,207 +1,154 @@
-// ─── Market Data ───
+// ── Market Data ──
 
-export interface GammaMarket {
-  id: string;
-  question: string;
-  description: string;
+export interface Market {
+  marketId: string;
   conditionId: string;
-  slug: string;
-  endDate: string;
-  liquidity: string;
-  volume: string;
-  outcomes: string[];       // e.g. ["Yes", "No"]
-  outcomePrices: string[];  // e.g. ["0.65", "0.35"]
-  clobTokenIds: string[];   // [yesTokenId, noTokenId]
-  active: boolean;
-  closed: boolean;
-  archived: boolean;
-  acceptingOrders: boolean;
-  enableOrderBook: boolean;
-  tags?: { id: string; label: string; slug: string }[];
-}
-
-export interface GammaEvent {
-  id: string;
-  title: string;
-  slug: string;
-  description: string;
-  markets: GammaMarket[];
-  endDate: string;
-  active: boolean;
-  closed: boolean;
-}
-
-// ─── Estimation ───
-
-export interface Stage1Estimate {
-  marketId: string;
   question: string;
-  fairYes: number;        // 0-1 probability
-  currentYes: number;     // current market price
-  potentialEdge: number;  // abs(fair - current)
+  slug: string;
+  category: MarketCategory;
+  // Crypto-specific
+  asset?: string;               // BTC, ETH, SOL
+  direction?: "up" | "down";    // what YES means (crypto up/down)
+  strikePrice?: number;
+  // Timing
+  windowStart: number;          // unix ms
+  windowEnd: number;            // unix ms
+  // Prices (from Gamma API)
+  currentYes: number;           // 0-1
+  currentNo: number;            // 0-1
+  // Token IDs for CLOB
+  yesTokenId: string;
+  noTokenId: string;
+  liquidity: number;
+  active: boolean;
 }
 
-export interface Stage2Estimate {
-  marketId: string;
-  question: string;
-  fairYes: number;
-  confidence: number;     // 0-1, how sure the model is
-  reasoning: string;
-  keyFactors: string[];
-  informationBasis: "concrete" | "informed" | "speculative";
+export type MarketCategory = "crypto-updown" | "crypto-price" | "politics" | "economics" | "sports" | "other";
+
+// ── Price Feed ──
+
+export interface PriceTick {
+  price: number;
+  timestamp: number;
 }
 
-// ─── Analysis ───
+export interface CoinbasePrice {
+  symbol: string;              // btcusdt
+  price: number;
+  timestamp: number;
+  change1m: number;            // fractional (0.003 = 0.3%)
+  change5m: number;
+  momentum: "up" | "down" | "flat";
+  realizedVol: number;         // annualized realized volatility from rolling window
+}
+
+// ── Order Book ──
+
+export interface OrderBookLevel {
+  price: number;
+  size: number;                // shares available
+}
+
+export interface OrderBook {
+  tokenId: string;
+  bids: OrderBookLevel[];      // sorted desc by price
+  asks: OrderBookLevel[];      // sorted asc by price
+  bestBid: number;
+  bestAsk: number;
+  midpoint: number;
+  spread: number;
+  bidDepthUsd: number;         // total USD on bid side (top 10)
+  askDepthUsd: number;         // total USD on ask side (top 10)
+  timestamp: number;
+}
+
+export interface MarketBooks {
+  yes: OrderBook;
+  no: OrderBook;
+  combinedAsk: number;         // YES bestAsk + NO bestAsk
+}
+
+// ── Slippage ──
+
+export interface SlippageEstimate {
+  vwap: number;                // volume-weighted average price for the order
+  slippagePct: number;         // (vwap - bestAsk) / bestAsk
+  fillableShares: number;      // how many shares can be filled in top-N levels
+  fillableUsd: number;         // total USD available in book
+  feasible: boolean;           // can the order be fully filled?
+}
+
+// ── Signals ──
+
+export type StrategyType =
+  | "complete-set"
+  | "volatility-fair"
+  | "latency"
+  | "orderbook-imbalance"
+  | "llm-fair";
 
 export interface Signal {
-  market: GammaMarket;
-  fairYes: number;
-  confidence: number;
+  strategy: StrategyType;
+  market: Market;
+  action: "buy-yes" | "buy-no" | "buy-both";
+  edge: number;                // expected profit margin (0-1)
+  confidence: number;          // 0-1
+  fairValue?: number;          // estimated probability for YES
   reasoning: string;
-  edge: number;           // signed: positive = buy YES, negative = buy NO
-  side: "YES" | "NO";
-  marketPrice: number;    // price we'd pay
-  tokenId: string;        // which token to buy
-  informationBasis: "concrete" | "informed" | "speculative";
-  model?: string;         // which model produced this signal
+  // Populated by sizer
+  size?: number;               // USD to spend
+  shares?: number;
+  slippage?: SlippageEstimate;
 }
 
-// ─── Sizing ───
-
-export interface SizedPosition {
-  signal: Signal;
-  kellyFraction: number;  // raw kelly %
-  positionSize: number;   // USD amount to risk
-  shares: number;         // positionSize / marketPrice
-}
-
-// ─── Execution ───
-
-export interface TradeResult {
-  success: boolean;
-  orderId?: string;
-  signal: Signal;
-  size: number;
-  price: number;
-  side: "YES" | "NO";
-  timestamp: number;
-  error?: string;
-}
-
-// ─── State / Tracking ───
-
-export interface OpenPosition {
-  marketId: string;
-  question: string;
-  conditionId: string;
-  tokenId: string;
-  side: "YES" | "NO";
-  entryPrice: number;
-  shares: number;
-  costBasis: number;      // total USD spent
-  timestamp: number;
-  orderId: string;
-}
-
-export interface ClosedPosition {
-  marketId: string;
-  question: string;
-  side: "YES" | "NO";
-  entryPrice: number;
-  exitPrice: number;      // 1 if resolved in our favor, 0 if against, or sell price
-  shares: number;
-  costBasis: number;
-  proceeds: number;
-  pnl: number;
-  resolvedAt: number;
-}
-
-export interface AgentState {
-  startedAt: number;
-  lastCycleAt: number;
-  cycleCount: number;
-  initialBankroll: number;
-  currentBalance: number;      // USDC on-chain
-  openPositions: OpenPosition[];
-  closedPositions: ClosedPosition[];
-  totalPnl: number;
-  totalApiCost: number;
-  dailyApiCost: number;
-  dailyApiCostResetAt: number;
-  alive: boolean;
-}
-
-// ─── API Credentials ───
-
-export interface ApiCredentials {
-  key: string;
-  secret: string;
-  passphrase: string;
-}
-
-// ─── Paper Trading ───
+// ── Paper Trading ──
 
 export interface PaperTrade {
-  id: string;                // unique trade ID
+  id: string;
   timestamp: number;
-  cycleNumber: number;
-
-  // Market snapshot at time of trade
-  marketId: string;
-  conditionId: string;
-  question: string;
-  slug: string;
-  endDate: string;
-  marketPriceYes: number;    // YES price at entry
-  marketPriceNo: number;     // NO price at entry
-  liquidity: number;
-
-  // Our estimate
-  side: "YES" | "NO";
-  fairYes: number;           // our probability estimate
+  market: {
+    marketId: string;
+    question: string;
+    category: MarketCategory;
+    asset?: string;
+    strikePrice?: number;
+    windowEnd: number;
+  };
+  strategy: StrategyType;
+  side: "YES" | "NO" | "BOTH";
+  entryPriceYes: number;
+  entryPriceNo: number;
+  vwapEntry: number;           // actual fill price (VWAP)
+  size: number;                // USD spent
+  shares: number;
+  coinbasePriceAtEntry: number;
+  edge: number;
   confidence: number;
-  edge: number;              // signed edge
   reasoning: string;
-
-  // Hypothetical position
-  hypotheticalSize: number;  // USD we would have spent
-  hypotheticalShares: number;
-  entryPrice: number;        // price we'd pay for our side
-
-  // Resolution (filled in later)
+  // Resolution
   resolved: boolean;
-  resolution: "YES" | "NO" | null;
-  resolvedAt: number | null;
-  pnl: number | null;        // hypothetical P&L
-
-  // Price tracking (added post-entry to track market confirmation)
-  priceHistory?: { timestamp: number; priceYes: number }[];
-
-  // Metadata
-  legacy?: boolean;           // true = taken under old rules, exclude from new-strategy P&L
-  model?: string;             // which model made this prediction
+  outcome: "YES" | "NO" | null;
+  coinbasePriceAtExpiry: number | null;
+  pnl: number | null;
 }
 
-export interface CalibrationBucket {
-  range: string;             // e.g. "60%-70%"
-  lower: number;
-  upper: number;
-  predictions: number;       // how many trades in this bucket
-  resolvedYes: number;       // how many resolved YES
-  actualRate: number | null; // resolvedYes / predictions
-  expectedRate: number;      // midpoint of range
-  brierSum: number;          // sum of (forecast - outcome)^2
+export interface BotStats {
+  totalTrades: number;
+  wins: number;
+  losses: number;
+  winRate: number;
+  totalPnl: number;
+  byStrategy: Record<StrategyType, { trades: number; wins: number; pnl: number }>;
+  opportunitiesSeen: number;
+  opportunitiesSkipped: number;
 }
 
-export interface PaperTradeState {
+export interface BotState {
   startedAt: number;
-  lastCycleAt: number;
-  cycleCount: number;
-  simulatedBankroll: number;  // tracks hypothetical balance (legacy, sum of all models)
+  bankroll: number;
   initialBankroll: number;
   trades: PaperTrade[];
-  totalApiCost: number;
-  dailyApiCost: number;
-  dailyApiCostResetAt: number;
-  modelBankrolls?: Record<string, number>;  // per-model simulated bankroll
+  openPositions: PaperTrade[];
+  stats: BotStats;
+  lastStatusLog: number;
 }

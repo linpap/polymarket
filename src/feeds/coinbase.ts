@@ -1,11 +1,11 @@
 import WebSocket from "ws";
 import { createLogger } from "../logger";
-import { COINBASE_WS_URL, COINBASE_PRODUCT_IDS, TRACKED_SYMBOLS, TrackedSymbol, UPDOWN_TRADING } from "./config";
-import { BinancePrice, PriceTick } from "./types";
+import { COINBASE_WS_URL, COINBASE_PRODUCT_IDS, TRADING, TrackedSymbol } from "../config";
+import { CoinbasePrice, PriceTick } from "../types";
 
-const log = createLogger("binance-feed");
+const log = createLogger("coinbase-feed");
 
-// Map Coinbase product_id → downstream symbol (e.g. "BTC-USD" → "btcusdt")
+// Map Coinbase product_id -> downstream symbol
 const PRODUCT_TO_SYMBOL: Record<string, TrackedSymbol> = {
   "BTC-USD": "btcusdt",
   "ETH-USD": "ethusdt",
@@ -14,8 +14,8 @@ const PRODUCT_TO_SYMBOL: Record<string, TrackedSymbol> = {
 
 // Rolling price windows per symbol
 const priceWindows: Map<string, PriceTick[]> = new Map();
-const latestPrices: Map<string, BinancePrice> = new Map();
-const moveCallbacks: Array<(symbol: string, price: BinancePrice) => void> = [];
+const latestPrices: Map<string, CoinbasePrice> = new Map();
+const moveCallbacks: Array<(symbol: string, price: CoinbasePrice) => void> = [];
 
 let ws: WebSocket | null = null;
 let reconnectTimer: ReturnType<typeof setTimeout> | null = null;
@@ -24,7 +24,7 @@ let running = false;
 function trimWindow(symbol: string): void {
   const window = priceWindows.get(symbol);
   if (!window) return;
-  const cutoff = Date.now() - UPDOWN_TRADING.priceWindowSeconds * 1000;
+  const cutoff = Date.now() - TRADING.priceWindowSeconds * 1000;
   while (window.length > 0 && window[0].timestamp < cutoff) {
     window.shift();
   }
@@ -33,9 +33,7 @@ function trimWindow(symbol: string): void {
 function computeChange(symbol: string, seconds: number): number {
   const window = priceWindows.get(symbol);
   if (!window || window.length < 2) return 0;
-  const now = Date.now();
-  const cutoff = now - seconds * 1000;
-  // Find the earliest tick within the lookback period
+  const cutoff = Date.now() - seconds * 1000;
   let earliest: PriceTick | null = null;
   for (const tick of window) {
     if (tick.timestamp >= cutoff) {
@@ -48,9 +46,52 @@ function computeChange(symbol: string, seconds: number): number {
   return (latest.price - earliest.price) / earliest.price;
 }
 
+/**
+ * Compute annualized realized volatility from the rolling price window.
+ * Uses log returns sampled at ~1s intervals.
+ */
+function computeRealizedVol(symbol: string): number {
+  const window = priceWindows.get(symbol);
+  if (!window || window.length < TRADING.volMinSamples) {
+    return TRADING.defaultAnnualVol;
+  }
+
+  // Sample at ~5s intervals to reduce microstructure noise
+  const sampleInterval = 5000; // 5s
+  const samples: number[] = [];
+  let lastTs = 0;
+  for (const tick of window) {
+    if (tick.timestamp - lastTs >= sampleInterval) {
+      samples.push(tick.price);
+      lastTs = tick.timestamp;
+    }
+  }
+
+  if (samples.length < 10) return TRADING.defaultAnnualVol;
+
+  // Compute log returns
+  const logReturns: number[] = [];
+  for (let i = 1; i < samples.length; i++) {
+    logReturns.push(Math.log(samples[i] / samples[i - 1]));
+  }
+
+  // Standard deviation of log returns
+  const mean = logReturns.reduce((a, b) => a + b, 0) / logReturns.length;
+  const variance = logReturns.reduce((a, r) => a + (r - mean) ** 2, 0) / (logReturns.length - 1);
+  const stdDev = Math.sqrt(variance);
+
+  // Annualize: each sample is ~5s apart
+  // Periods per year = (365.25 * 24 * 3600) / 5
+  const periodsPerYear = (365.25 * 24 * 3600) / 5;
+  const annualized = stdDev * Math.sqrt(periodsPerYear);
+
+  // Clamp to reasonable range (20% - 300%)
+  return Math.max(0.20, Math.min(3.0, annualized));
+}
+
 function getMomentumDirection(change1m: number): "up" | "down" | "flat" {
-  if (change1m > UPDOWN_TRADING.momentumThreshold) return "up";
-  if (change1m < -UPDOWN_TRADING.momentumThreshold) return "down";
+  if (change1m > TRADING.momentumThreshold) return "up";
+  if (change1m < -TRADING.momentumThreshold) return "down";
   return "flat";
 }
 
@@ -70,23 +111,25 @@ function handleMatch(productId: string, priceStr: string, timeStr: string): void
   const change1m = computeChange(symbol, 60);
   const change5m = computeChange(symbol, 300);
   const momentum = getMomentumDirection(change1m);
+  const realizedVol = computeRealizedVol(symbol);
 
-  const bp: BinancePrice = {
+  const cp: CoinbasePrice = {
     symbol,
     price,
     timestamp,
     change1m,
     change5m,
     momentum,
+    realizedVol,
   };
-  latestPrices.set(symbol, bp);
+  latestPrices.set(symbol, cp);
 
-  // Check for significant move (0.1% in 30s)
+  // Fire callbacks on significant moves (0.01%+ in 30s)
   const change30s = computeChange(symbol, 30);
-  if (Math.abs(change30s) >= UPDOWN_TRADING.momentumThreshold) {
+  if (Math.abs(change30s) >= TRADING.momentumThreshold) {
     for (const cb of moveCallbacks) {
       try {
-        cb(symbol, bp);
+        cb(symbol, cp);
       } catch (e) {
         log.error("Price move callback error", e);
       }
@@ -100,7 +143,6 @@ function connect(): void {
 
   ws.on("open", () => {
     log.info("Coinbase WebSocket connected");
-    // Subscribe to match channel for trade data
     const subscribeMsg = JSON.stringify({
       type: "subscribe",
       product_ids: COINBASE_PRODUCT_IDS,
@@ -116,8 +158,7 @@ function connect(): void {
       if (msg.type === "match" || msg.type === "last_match") {
         handleMatch(msg.product_id, msg.price, msg.time);
       }
-      // Ignore subscriptions, heartbeats, errors etc.
-    } catch (e) {
+    } catch {
       // Ignore parse errors
     }
   });
@@ -142,7 +183,7 @@ function scheduleReconnect(): void {
   }, 3000);
 }
 
-// ─── Public API ───
+// ── Public API ──
 
 export function startFeed(): void {
   running = true;
@@ -159,15 +200,11 @@ export function stopFeed(): void {
   }
 }
 
-export function getPrice(symbol: string): BinancePrice | null {
+export function getPrice(symbol: string): CoinbasePrice | null {
   return latestPrices.get(symbol.toLowerCase()) || null;
 }
 
-export function getMomentum(symbol: string): BinancePrice | null {
-  return latestPrices.get(symbol.toLowerCase()) || null;
-}
-
-export function onPriceMove(callback: (symbol: string, price: BinancePrice) => void): void {
+export function onPriceMove(callback: (symbol: string, price: CoinbasePrice) => void): void {
   moveCallbacks.push(callback);
 }
 
@@ -175,6 +212,6 @@ export function hasPriceData(): boolean {
   return latestPrices.size > 0;
 }
 
-export function getAllPrices(): Map<string, BinancePrice> {
+export function getAllPrices(): Map<string, CoinbasePrice> {
   return new Map(latestPrices);
 }

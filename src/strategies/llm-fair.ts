@@ -1,21 +1,20 @@
-import { createLogger } from "../../logger";
+import { createLogger } from "../logger";
 import {
   NVIDIA_API_KEY, NVIDIA_ENDPOINT, NVIDIA_MODEL,
   OPENROUTER_API_KEY, OPENROUTER_ENDPOINT, OPENROUTER_MODELS,
-  KALSHI_TRADING,
+  TRADING,
 } from "../config";
-import { KalshiMarket, KalshiSignal, KalshiCategory } from "../types";
-import { detectCategory } from "../scanner";
+import { Market, MarketBooks, Signal } from "../types";
 
 const log = createLogger("llm-fair");
-
-// ─── LLM call with fallback chain ───
 
 interface LLMEstimate {
   probability: number;
   confidence: number;
   reasoning: string;
 }
+
+// ── LLM call with fallback chain ──
 
 async function callNvidia(prompt: string): Promise<LLMEstimate | null> {
   if (!NVIDIA_API_KEY) return null;
@@ -75,7 +74,7 @@ async function callOpenRouter(prompt: string): Promise<LLMEstimate | null> {
       const content = data.choices?.[0]?.message?.content || "";
       const estimate = parseEstimate(content);
       if (estimate) {
-        log.debug("OpenRouter estimate from", { model, probability: estimate.probability });
+        log.debug("OpenRouter estimate", { model, prob: estimate.probability });
         return estimate;
       }
     } catch {
@@ -97,28 +96,21 @@ function parseEstimate(content: string): LLMEstimate | null {
     const reasoning = String(parsed.reasoning || "").slice(0, 200);
 
     if (isNaN(probability) || probability < 0 || probability > 1) return null;
-
     return { probability, confidence, reasoning };
   } catch {
     return null;
   }
 }
 
-// ─── Build LLM prompt ───
-
-function buildPrompt(market: KalshiMarket, category: KalshiCategory): string {
-  const closeDate = new Date(market.close_time).toLocaleDateString("en-US", {
-    weekday: "long",
-    month: "long",
-    day: "numeric",
-    year: "numeric",
+function buildPrompt(market: Market): string {
+  const closeDate = new Date(market.windowEnd).toLocaleDateString("en-US", {
+    weekday: "long", month: "long", day: "numeric", year: "numeric",
   });
 
   return `You are an independent prediction analyst. Your job is to estimate probabilities from first principles — do NOT simply agree with the market price.
 
-Question: "${market.title}"
-${market.subtitle ? `Context: "${market.subtitle}"` : ""}
-Category: ${category}
+Question: "${market.question}"
+Category: ${market.category}
 Resolution date: ${closeDate}
 
 IMPORTANT: Form your OWN estimate FIRST based on:
@@ -136,15 +128,13 @@ probability = your estimated chance this resolves YES (0.0 to 1.0)
 confidence = how confident you are (0.5 = coin flip, 0.9 = very sure)`;
 }
 
-// ─── Strategy entry point ───
+// ── Strategy entry point ──
 
-export async function evaluateLLMFair(market: KalshiMarket): Promise<KalshiSignal | null> {
-  const category = detectCategory(market);
+export async function evaluateLLMFair(market: Market, books: MarketBooks): Promise<Signal | null> {
+  // Skip crypto up/down (handled by vol-fair and latency)
+  if (market.category === "crypto-updown") return null;
 
-  // Skip crypto markets (handled by crypto-price strategy)
-  if (category === "crypto") return null;
-
-  const prompt = buildPrompt(market, category);
+  const prompt = buildPrompt(market);
 
   // Try NVIDIA first, fallback to OpenRouter
   let estimate = await callNvidia(prompt);
@@ -153,80 +143,52 @@ export async function evaluateLLMFair(market: KalshiMarket): Promise<KalshiSigna
   }
 
   if (!estimate) {
-    log.debug("No LLM estimate for", { ticker: market.ticker });
+    log.debug("No LLM estimate", { id: market.marketId.slice(0, 12) });
     return null;
   }
 
-  log.debug("LLM estimate received", {
-    ticker: market.ticker,
-    probability: estimate.probability.toFixed(3),
-    confidence: estimate.confidence.toFixed(2),
-    yes_ask: market.yes_ask.toFixed(3),
-    no_ask: market.no_ask.toFixed(3),
-    reasoning: estimate.reasoning.slice(0, 60),
-  });
-
-  // Reject low-confidence estimates
-  if (estimate.confidence < KALSHI_TRADING.llmMinConfidence) {
-    log.debug("LLM confidence too low", {
-      ticker: market.ticker,
-      confidence: estimate.confidence.toFixed(2),
-    });
+  if (estimate.confidence < TRADING.llmMinConfidence) {
+    log.debug("LLM confidence too low", { confidence: estimate.confidence.toFixed(2) });
     return null;
   }
 
   const fairValue = estimate.probability;
+  const yesEdge = fairValue - books.yes.bestAsk;
+  const noEdge = (1 - fairValue) - books.no.bestAsk;
 
-  // Check both sides
-  const yesEdge = fairValue - market.yes_ask;
-  const noEdge = (1 - fairValue) - market.no_ask;
-
-  log.debug("Edge calculation", {
-    ticker: market.ticker,
-    fairValue: fairValue.toFixed(3),
-    yesEdge: (yesEdge * 100).toFixed(1) + "%",
-    noEdge: (noEdge * 100).toFixed(1) + "%",
-    minEdge: (KALSHI_TRADING.llmFairMinEdge * 100).toFixed(1) + "%",
-  });
-
-  let side: "yes" | "no";
+  let action: "buy-yes" | "buy-no";
   let edge: number;
-  let marketPrice: number;
+  let entryPrice: number;
 
-  if (yesEdge > noEdge && yesEdge > KALSHI_TRADING.llmFairMinEdge) {
-    side = "yes";
+  if (yesEdge > noEdge && yesEdge > TRADING.llmMinEdge) {
+    action = "buy-yes";
     edge = yesEdge;
-    marketPrice = market.yes_ask;
-  } else if (noEdge > KALSHI_TRADING.llmFairMinEdge) {
-    side = "no";
+    entryPrice = books.yes.bestAsk;
+  } else if (noEdge > TRADING.llmMinEdge) {
+    action = "buy-no";
     edge = noEdge;
-    marketPrice = market.no_ask;
+    entryPrice = books.no.bestAsk;
   } else {
-    log.debug("No edge found", { ticker: market.ticker });
     return null;
   }
 
-  log.info("LLM fair value signal", {
-    ticker: market.ticker,
-    category,
-    fairValue: fairValue.toFixed(3),
-    marketYes: market.yes_ask.toFixed(3),
-    side,
+  log.info("LLM fair signal", {
+    q: market.question.slice(0, 60),
+    fair: fairValue.toFixed(3),
+    action,
+    entry: entryPrice.toFixed(3),
     edge: (edge * 100).toFixed(1) + "%",
-    llmConfidence: estimate.confidence.toFixed(2),
+    llmConf: estimate.confidence.toFixed(2),
   });
 
   return {
     strategy: "llm-fair",
     market,
-    side,
-    fairValue,
-    marketPrice,
+    action,
     edge,
     confidence: estimate.confidence,
-    categoryMultiplier: 1.0, // will be overridden by evaluator
-    reasoning: `LLM fair value: ${(fairValue * 100).toFixed(1)}% (conf=${(estimate.confidence * 100).toFixed(0)}%). ` +
-      `Market ${side.toUpperCase()} ask: ${(marketPrice * 100).toFixed(1)}%. ` +
-      `Edge: ${(edge * 100).toFixed(1)}%. ${estimate.reasoning}`,
+    fairValue,
+    reasoning: `LLM fair: ${(fairValue * 100).toFixed(1)}% (conf=${(estimate.confidence * 100).toFixed(0)}%). ` +
+      `${action} at ${entryPrice.toFixed(3)}, edge=${(edge * 100).toFixed(1)}%. ${estimate.reasoning}`,
   };
 }

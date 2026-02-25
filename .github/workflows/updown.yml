@@ -1,15 +1,15 @@
-name: Up/Down Trading Bot
+name: Polymarket Trading Bot
 
 on:
   schedule:
-    # 23:15 UTC = 6:15 PM EST = 4:45 AM IST (15 min before market opens)
+    # 23:15 UTC = 6:15 PM EST (15 min before market opens)
     - cron: '15 23 * * *'
-  workflow_dispatch: {} # manual trigger
+  workflow_dispatch: {}
 
 jobs:
   trade:
     runs-on: ubuntu-latest
-    timeout-minutes: 300 # 5 hours max (covers 4.5h window + buffer)
+    timeout-minutes: 300
 
     steps:
       - uses: actions/checkout@v4
@@ -23,11 +23,10 @@ jobs:
       # Restore state from previous run
       - uses: actions/cache@v4
         with:
-          path: state/updown-trades.json
-          key: updown-state-${{ github.run_number }}
-          restore-keys: updown-state-
+          path: state/trades.json
+          key: bot-state-${{ github.run_number }}
+          restore-keys: bot-state-
 
-      # Ensure state directory exists
       - run: mkdir -p state
 
       # Create .env from secrets
@@ -37,12 +36,12 @@ jobs:
           echo "DRY_RUN=true" >> .env
           echo "LOG_LEVEL=info" >> .env
 
-      # Run bot for 4.5 hours (16200 seconds), then graceful shutdown
-      - run: timeout --signal=SIGTERM 16200 npx tsx src/updown/index.ts || true
+      # Run bot for 4.5 hours, then graceful shutdown
+      - run: timeout --signal=SIGTERM 16200 npx tsx src/index.ts || true
 
-      # Upload state as artifact for inspection
+      # Upload state as artifact
       - uses: actions/upload-artifact@v4
         if: always()
         with:
-          name: updown-state-${{ github.run_id }}
-          path: state/updown-trades.json
+          name: bot-state-${{ github.run_id }}
+          path: state/trades.json
