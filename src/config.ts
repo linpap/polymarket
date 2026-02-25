@@ -48,15 +48,15 @@ export const TRADING = {
   // Position sizing
   maxPositionPct: 0.05,          // 5% bankroll per trade
   maxPositionUsd: 500,
-  maxOpenPositions: 5,
-  maxPositionsPerAsset: 1,
-  kellyFraction: 0.20,          // conservative 20% Kelly
+  maxOpenPositions: 8,
+  maxPositionsPerAsset: 2,
+  kellyFraction: 0.25,          // 25% Kelly
 
   // Slippage gates
-  minBookDepthUsd: 500,         // top-5 book must have $500+
-  maxSlippagePct: 0.03,         // 3% max slippage
-  minEdgeAfterSlippage: 0.02,   // 2% net edge required
-  maxPositionPctOfBook: 0.50,   // don't take >50% of visible depth
+  minBookDepthUsd: 200,         // top-5 book must have $200+
+  maxSlippagePct: 0.05,         // 5% max slippage
+  minEdgeAfterSlippage: 0.01,   // 1% net edge required
+  maxPositionPctOfBook: 0.40,   // don't take >40% of visible depth
 
   // Volatility-fair (Black-Scholes)
   defaultAnnualVol: 0.80,       // fallback if no realized vol yet
@@ -64,20 +64,20 @@ export const TRADING = {
   volMinSamples: 60,            // need 60+ ticks before trusting realized vol
 
   // Latency strategy
-  latencyMaxTimeRemaining: 1800, // 30 min
+  latencyMaxTimeRemaining: 3600, // 60 min
   latencyMinTimeRemaining: 10,   // 10s
-  latencySigmaThreshold: 2.0,   // move must be 2-sigma to qualify
+  latencySigmaThreshold: 1.5,   // move must be 1.5-sigma to qualify
 
   // Orderbook imbalance
-  imbalanceThreshold: 0.80,     // 80%+ on one side
-  imbalanceMinEdge: 0.03,       // 3% edge required
+  imbalanceThreshold: 0.70,     // 70%+ on one side
+  imbalanceMinEdge: 0.02,       // 2% edge required
 
   // Complete-set
   completeSetThreshold: 0.98,   // YES+NO < $0.98
 
   // LLM fair value
   llmMinConfidence: 0.50,
-  llmMinEdge: 0.04,             // 4% edge
+  llmMinEdge: 0.03,             // 3% edge
 
   // Price feed
   priceWindowSeconds: 300,      // 5-min rolling
