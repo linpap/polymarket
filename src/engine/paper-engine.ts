@@ -95,14 +95,11 @@ export async function executePaperTrade(signal: Signal): Promise<PaperTrade | nu
   // Max total open positions
   if (state.openPositions.length >= TRADING.maxOpenPositions) return null;
 
-  // Get fresh book for sizing
+  // Get fresh books for sizing (sizer checks slippage on both sides for buy-both)
   const books = await getMarketBooks(signal.market);
-  const book = signal.action === "buy-yes" ? books.yes
-    : signal.action === "buy-no" ? books.no
-    : books.yes; // buy-both uses yes book for sizing
 
-  // Size the position (includes slippage gates)
-  const sized = sizePosition(signal, state.bankroll, book);
+  // Size the position (includes slippage gates on correct book(s))
+  const sized = sizePosition(signal, state.bankroll, books);
   if (!sized || !sized.size || !sized.shares) return null;
 
   const coinbase = signal.market.asset
@@ -220,9 +217,8 @@ function computePnl(trade: PaperTrade): void {
   if (!trade.outcome) return;
 
   if (trade.side === "BOTH") {
-    // Complete-set: guaranteed $1/share
-    const costPerShare = trade.entryPriceYes + trade.entryPriceNo;
-    trade.pnl = trade.shares * (1.0 - costPerShare);
+    // Complete-set: guaranteed $1/share, cost is VWAP (stored as combined VWAP in vwapEntry)
+    trade.pnl = trade.shares * (1.0 - trade.vwapEntry);
   } else if (trade.side === trade.outcome) {
     // Won: get $1/share, paid VWAP entry
     trade.pnl = trade.shares * (1.0 - trade.vwapEntry);

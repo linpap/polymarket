@@ -24,6 +24,10 @@ export function getSkipReasons(): Record<string, number> {
   return { ...skipReasons };
 }
 
+// LLM cooldown: don't re-evaluate general markets more than once every 10 min
+const llmCooldowns: Map<string, number> = new Map();
+const LLM_COOLDOWN_MS = 10 * 60 * 1000;
+
 // ── Fallback books from scanner prices ──
 
 function fallbackBooks(market: Market): MarketBooks {
@@ -59,11 +63,25 @@ function fallbackBooks(market: Market): MarketBooks {
  * 5. LLM fair value (general markets, expensive so last)
  */
 export async function evaluateMarket(market: Market): Promise<Signal | null> {
-  // For crypto markets, ensure we have price data
-  if (market.category === "crypto-updown" && market.asset) {
-    const symbol = ASSET_TO_SYMBOL[market.asset];
-    if (!symbol) return trackSkip("no-symbol");
-    if (!getPrice(symbol)) return trackSkip("no-price-data");
+  // For crypto markets, check time + price data BEFORE fetching order book
+  if (market.category === "crypto-updown") {
+    const now = Date.now();
+    const timeRemaining = (market.windowEnd - now) / 1000;
+    if (timeRemaining > 1800) return trackSkip("too-far-from-expiry");
+    if (timeRemaining < 10) return trackSkip("too-close-to-expiry");
+
+    if (market.asset) {
+      const symbol = ASSET_TO_SYMBOL[market.asset];
+      if (!symbol) return trackSkip("no-symbol");
+      if (!getPrice(symbol)) return trackSkip("no-price-data");
+    }
+  }
+
+  // For general markets, cooldown per market to avoid hammering LLM
+  if (market.category !== "crypto-updown") {
+    const lastEval = llmCooldowns.get(market.marketId) || 0;
+    if (Date.now() - lastEval < LLM_COOLDOWN_MS) return trackSkip("llm-cooldown");
+    llmCooldowns.set(market.marketId, Date.now());
   }
 
   // Get fresh order book
@@ -118,12 +136,5 @@ export async function evaluateMarket(market: Market): Promise<Signal | null> {
 
   // Track skip reason
   if (booksIlliquid) return trackSkip("illiquid-books");
-  if (market.category === "crypto-updown") {
-    const now = Date.now();
-    const timeRemaining = (market.windowEnd - now) / 1000;
-    if (timeRemaining > 1800) return trackSkip("too-far-from-expiry");
-    if (timeRemaining < 10) return trackSkip("too-close-to-expiry");
-    return trackSkip("no-edge");
-  }
   return trackSkip("no-edge");
 }
