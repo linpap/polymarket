@@ -4,6 +4,7 @@ import { TRADING } from "./config";
 import { startFeed, stopFeed, hasPriceData, getAllPrices, onPriceMove } from "./feeds/coinbase";
 import { startScanner, stopScanner, getActiveMarkets, onNewMarket } from "./markets/scanner";
 import { evaluateMarket, getSkipReasons } from "./strategies/index";
+import { cleanupBeliefs } from "./bayesian/engine";
 import {
   loadState, saveState, executePaperTrade, resolveExpired,
   recordOpportunity, getStats, getBankroll, getOpenPositions,
@@ -13,7 +14,6 @@ import { Market } from "./types";
 const log = createLogger("bot");
 
 let running = false;
-const evaluatedThisCycle = new Set<string>();
 
 // ── Market evaluation ──
 
@@ -22,10 +22,6 @@ async function evaluateAllMarkets(): Promise<void> {
   if (markets.length === 0) return;
 
   for (const market of markets) {
-    if (evaluatedThisCycle.has(market.marketId)) continue;
-    evaluatedThisCycle.add(market.marketId);
-    setTimeout(() => evaluatedThisCycle.delete(market.marketId), 10_000);
-
     try {
       const signal = await evaluateMarket(market);
       recordOpportunity(!!signal);
@@ -65,7 +61,7 @@ function logStatus(): void {
   const generalMarkets = activeMarkets.length - cryptoMarkets;
 
   console.log("\n" + "=".repeat(85));
-  console.log("  POLYMARKET PAPER TRADING BOT");
+  console.log("  POLYMARKET PAPER TRADING BOT — Bayesian + LMSR Engine");
   console.log("=".repeat(85));
   console.log(`  Bankroll:      $${bankroll.toFixed(2)} (started $${TRADING.initialBankroll.toLocaleString()})`);
   console.log(`  Total P&L:     ${stats.totalPnl >= 0 ? "+" : ""}$${stats.totalPnl.toFixed(2)}`);
@@ -110,11 +106,11 @@ function logStatus(): void {
 // ── Main loop ──
 
 async function run(): Promise<void> {
-  log.info("Starting Polymarket Paper Trading Bot", {
+  log.info("Starting Polymarket Paper Trading Bot — Bayesian + LMSR", {
     bankroll: TRADING.initialBankroll,
     maxPosition: TRADING.maxPositionUsd,
     maxOpen: TRADING.maxOpenPositions,
-    strategies: "complete-set, vol-fair, latency, ob-imbalance, llm-fair",
+    strategy: "bayesian-lmsr",
   });
 
   loadState();
@@ -160,6 +156,11 @@ async function run(): Promise<void> {
     try {
       resolveExpired();
       await evaluateAllMarkets();
+
+      // Cleanup beliefs for expired markets
+      const activeIds = new Set(getActiveMarkets().map(m => m.marketId));
+      cleanupBeliefs(activeIds);
+
       logStatus();
       saveState();
     } catch (e) {

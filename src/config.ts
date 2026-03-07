@@ -40,54 +40,74 @@ export const OPENROUTER_MODELS = [
   "nousresearch/hermes-3-llama-3.1-405b:free",
 ];
 
+// ── Bayesian engine parameters ──
+
+export const BAYESIAN = {
+  // Minimum edge to trigger a trade
+  minEdgeThreshold: 0.001,        // 0.1% (max volume mode)
+
+  // Signal weights for Bayesian update
+  signalWeights: {
+    priceMomentum: 0.8,           // crypto momentum
+    orderbookImbalance: 0.5,      // bid/ask depth ratio
+    externalPrice: 1.2,           // Black-Scholes (strongest)
+    llmPrior: 1.0,                // LLM estimate (general markets)
+  },
+
+  // Signal thresholds (signals return null below these)
+  momentumMinSigma: 0.5,          // 0.5σ move (aggressive for volume)
+  imbalanceMinNet: 0.05,          // 5% net imbalance (aggressive)
+  externalPriceMinDivergence: 0.003, // 0.3% BS divergence (mostly unused — signal scales weight instead)
+
+  // Adaptive Kelly fraction by time-to-expiry
+  kellyByDuration: {
+    under1h: 0.10,                // 10% Kelly
+    hours1to6: 0.15,              // 15%
+    hours6to24: 0.20,             // 20%
+    days1to7: 0.25,               // 25%
+    over7d: 0.20,                 // 20% (less certain over long horizons)
+  },
+
+  // LLM cooldown per market
+  llmCooldownMs: 3 * 60 * 1000,  // 3 minutes (aggressive)
+
+  // Belief update interval (don't re-evaluate faster than this)
+  updateIntervalMs: 1_000,       // 1 second (very aggressive)
+} as const;
+
 // ── Trading parameters ──
 
 export const TRADING = {
-  initialBankroll: 10_000,
+  initialBankroll: 1_000_000,
 
-  // Position sizing
-  maxPositionPct: 0.05,          // 5% bankroll per trade
-  maxPositionUsd: 500,
-  maxOpenPositions: 8,
-  maxPositionsPerAsset: 2,
-  kellyFraction: 0.25,          // 25% Kelly
+  // Position sizing (many small bets — fits orderbook depth)
+  maxPositionPct: 0.002,         // 0.2% bankroll per trade = $2K max
+  maxPositionUsd: 2_000,
+  maxOpenPositions: 500,
+  maxPositionsPerAsset: 20,
 
   // Slippage gates
-  minBookDepthUsd: 200,         // top-5 book must have $200+
-  maxSlippagePct: 0.05,         // 5% max slippage
-  minEdgeAfterSlippage: 0.01,   // 1% net edge required
-  maxPositionPctOfBook: 0.40,   // don't take >40% of visible depth
+  minBookDepthUsd: 50,           // top-5 book must have $50+ (relaxed for volume)
+  maxSlippagePct: 0.25,          // 25% max slippage (paper trading, accept wide books)
+  minEdgeAfterSlippage: -1,      // disabled for paper trading (accept slippage)
+  maxPositionPctOfBook: 0.40,    // don't take >40% of visible depth
 
-  // Volatility-fair (Black-Scholes)
-  defaultAnnualVol: 0.80,       // fallback if no realized vol yet
-  volWindowMinutes: 30,         // rolling window for realized vol
-  volMinSamples: 60,            // need 60+ ticks before trusting realized vol
-
-  // Latency strategy
-  latencyMaxTimeRemaining: 3600, // 60 min
-  latencyMinTimeRemaining: 10,   // 10s
-  latencySigmaThreshold: 1.5,   // move must be 1.5-sigma to qualify
-
-  // Orderbook imbalance
-  imbalanceThreshold: 0.70,     // 70%+ on one side
-  imbalanceMinEdge: 0.02,       // 2% edge required
-
-  // Complete-set
-  completeSetThreshold: 0.98,   // YES+NO < $0.98
-
-  // LLM fair value
-  llmMinConfidence: 0.50,
-  llmMinEdge: 0.03,             // 3% edge
+  // Complete-set arbitrage
+  completeSetThreshold: 0.98,    // YES+NO < $0.98
 
   // Price feed
-  priceWindowSeconds: 300,      // 5-min rolling
-  momentumThreshold: 0.0001,    // 0.01% = significant move for callbacks
+  priceWindowSeconds: 300,       // 5-min rolling
+  momentumThreshold: 0.0001,     // 0.01% = significant move for callbacks
   statusLogIntervalMs: 30_000,
 
+  // Volatility (used by coinbase feed)
+  defaultAnnualVol: 0.80,
+  volMinSamples: 60,
+
   // General market scanning
-  generalMarketPollMs: 120_000, // poll general markets every 2 min
+  generalMarketPollMs: 60_000,   // poll general markets every 1 min
   generalMinHoursToClose: 1,
-  generalMaxDaysToClose: 365,
+  generalMaxDaysToClose: 2,      // 48 hours only
 } as const;
 
 // ── State paths ──

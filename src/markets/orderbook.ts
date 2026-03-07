@@ -6,11 +6,36 @@ const log = createLogger("orderbook");
 
 let fetchErrors = 0;
 
+// ── Rate limiter: max 8 requests/sec to avoid 429s ──
+
+const RATE_LIMIT_PER_SEC = 8;
+let tokenBucket = RATE_LIMIT_PER_SEC;
+let lastRefill = Date.now();
+
+async function waitForToken(): Promise<void> {
+  while (true) {
+    const now = Date.now();
+    const elapsed = now - lastRefill;
+    if (elapsed >= 1000) {
+      tokenBucket = RATE_LIMIT_PER_SEC;
+      lastRefill = now;
+    }
+    if (tokenBucket > 0) {
+      tokenBucket--;
+      return;
+    }
+    // Wait until next refill
+    await new Promise(r => setTimeout(r, Math.max(50, 1000 - elapsed)));
+  }
+}
+
 /**
  * Fetch full order book depth for a token from Polymarket CLOB.
  * Returns all bid/ask levels, not just best prices.
  */
 async function fetchBook(tokenId: string): Promise<OrderBook> {
+  await waitForToken();
+
   const url = `${CLOB_API}/book?token_id=${tokenId}`;
   const resp = await fetch(url);
   if (!resp.ok) {
@@ -60,7 +85,7 @@ export async function getOrderBook(tokenId: string): Promise<OrderBook> {
     return await fetchBook(tokenId);
   } catch (e) {
     fetchErrors++;
-    if (fetchErrors <= 5 || fetchErrors % 50 === 0) {
+    if (fetchErrors <= 5 || fetchErrors % 100 === 0) {
       log.info("CLOB fetch failed", {
         tokenId: tokenId.slice(0, 20) + "...",
         error: (e as Error).message,
@@ -83,10 +108,9 @@ export async function getOrderBook(tokenId: string): Promise<OrderBook> {
 }
 
 export async function getMarketBooks(market: Market): Promise<MarketBooks> {
-  const [yes, no] = await Promise.all([
-    getOrderBook(market.yesTokenId),
-    getOrderBook(market.noTokenId),
-  ]);
+  // Sequential to respect rate limiter
+  const yes = await getOrderBook(market.yesTokenId);
+  const no = await getOrderBook(market.noTokenId);
 
   const combinedAsk = yes.bestAsk + no.bestAsk;
 

@@ -78,14 +78,18 @@ export interface SlippageEstimate {
   feasible: boolean;           // can the order be fully filled?
 }
 
+// ── Bayesian Engine ──
+
+export interface SignalLikelihood {
+  name: string;                // signal identifier
+  likelihoodYes: number;       // P(data | YES)
+  likelihoodNo: number;        // P(data | NO)
+  weight: number;              // signal weight in update
+}
+
 // ── Signals ──
 
-export type StrategyType =
-  | "complete-set"
-  | "volatility-fair"
-  | "latency"
-  | "orderbook-imbalance"
-  | "llm-fair";
+export type StrategyType = "bayesian-lmsr" | "complete-set";
 
 export interface Signal {
   strategy: StrategyType;
@@ -114,7 +118,7 @@ export interface PaperTrade {
     strikePrice?: number;
     windowEnd: number;
   };
-  strategy: StrategyType;
+  strategy: StrategyType | string; // string for legacy strategy labels
   side: "YES" | "NO" | "BOTH";
   entryPriceYes: number;
   entryPriceNo: number;
@@ -138,7 +142,7 @@ export interface BotStats {
   losses: number;
   winRate: number;
   totalPnl: number;
-  byStrategy: Record<StrategyType, { trades: number; wins: number; pnl: number }>;
+  byStrategy: Record<string, { trades: number; wins: number; pnl: number }>;
   opportunitiesSeen: number;
   opportunitiesSkipped: number;
 }

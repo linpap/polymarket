@@ -8,14 +8,12 @@ import { sizePosition } from "./sizer";
 
 const log = createLogger("paper-engine");
 
-const ALL_STRATEGIES: StrategyType[] = [
-  "complete-set", "volatility-fair", "latency", "orderbook-imbalance", "llm-fair",
-];
+const ALL_STRATEGIES: StrategyType[] = ["bayesian-lmsr", "complete-set"];
 
 let state: BotState;
 
 function defaultStats(): BotStats {
-  const byStrategy: Record<StrategyType, { trades: number; wins: number; pnl: number }> = {} as any;
+  const byStrategy: Record<string, { trades: number; wins: number; pnl: number }> = {};
   for (const s of ALL_STRATEGIES) {
     byStrategy[s] = { trades: 0, wins: 0, pnl: 0 };
   }
@@ -50,7 +48,7 @@ export function loadState(): BotState {
     if (fs.existsSync(STATE_FILE)) {
       const raw = fs.readFileSync(STATE_FILE, "utf-8");
       state = JSON.parse(raw);
-      // Ensure all strategy keys exist (in case new strategies added)
+      // Ensure all current strategy keys exist
       for (const s of ALL_STRATEGIES) {
         if (!state.stats.byStrategy[s]) {
           state.stats.byStrategy[s] = { trades: 0, wins: 0, pnl: 0 };
@@ -84,7 +82,13 @@ export function saveState(): void {
 // ── Paper trade execution ──
 
 export async function executePaperTrade(signal: Signal): Promise<PaperTrade | null> {
-  // Max 1 open position per asset
+  // Max 1 open position per specific market question
+  const marketPositions = state.openPositions.filter(
+    p => p.market.marketId === signal.market.marketId
+  );
+  if (marketPositions.length >= 1) return null;
+
+  // Max positions per asset (e.g., max 20 BTC positions across different time windows)
   if (signal.market.asset) {
     const assetPositions = state.openPositions.filter(
       p => p.market.asset === signal.market.asset
@@ -139,9 +143,10 @@ export async function executePaperTrade(signal: Signal): Promise<PaperTrade | nu
   state.openPositions.push(trade);
   state.trades.push(trade);
   state.stats.totalTrades++;
-  if (state.stats.byStrategy[signal.strategy]) {
-    state.stats.byStrategy[signal.strategy].trades++;
+  if (!state.stats.byStrategy[signal.strategy]) {
+    state.stats.byStrategy[signal.strategy] = { trades: 0, wins: 0, pnl: 0 };
   }
+  state.stats.byStrategy[signal.strategy].trades++;
 
   log.info("PAPER TRADE EXECUTED", {
     id: trade.id,
@@ -185,11 +190,9 @@ export function resolveExpired(): PaperTrade[] {
       }
       trade.outcome = outcome;
     } else {
-      // General market: check Gamma API for resolution
-      // For now, mark as resolved based on time (will be enhanced later)
-      // TODO: poll Gamma API for actual resolution
-      trade.outcome = null; // can't determine yet
-      continue; // don't resolve until we can confirm outcome
+      // General market: can't determine yet
+      trade.outcome = null;
+      continue;
     }
 
     trade.resolved = true;
@@ -217,7 +220,7 @@ function computePnl(trade: PaperTrade): void {
   if (!trade.outcome) return;
 
   if (trade.side === "BOTH") {
-    // Complete-set: guaranteed $1/share, cost is VWAP (stored as combined VWAP in vwapEntry)
+    // Complete-set: guaranteed $1/share, cost is VWAP (combined cost per set)
     trade.pnl = trade.shares * (1.0 - trade.vwapEntry);
   } else if (trade.side === trade.outcome) {
     // Won: get $1/share, paid VWAP entry
@@ -232,12 +235,15 @@ function computePnl(trade: PaperTrade): void {
 
   // Update stats
   state.stats.totalPnl += trade.pnl || 0;
+  if (!state.stats.byStrategy[trade.strategy]) {
+    state.stats.byStrategy[trade.strategy] = { trades: 0, wins: 0, pnl: 0 };
+  }
   const strat = state.stats.byStrategy[trade.strategy];
-  if (strat) strat.pnl += trade.pnl || 0;
+  strat.pnl += trade.pnl || 0;
 
   if (trade.pnl !== null && trade.pnl > 0) {
     state.stats.wins++;
-    if (strat) strat.wins++;
+    strat.wins++;
   } else {
     state.stats.losses++;
   }

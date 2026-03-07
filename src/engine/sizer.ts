@@ -1,9 +1,24 @@
 import { createLogger } from "../logger";
-import { TRADING } from "../config";
-import { Signal, MarketBooks, SlippageEstimate } from "../types";
+import { TRADING, BAYESIAN } from "../config";
+import { Signal, MarketBooks, SlippageEstimate, Market } from "../types";
 import { checkSlippageGates, computeSlippage } from "../markets/slippage";
 
 const log = createLogger("sizer");
+
+/**
+ * Adaptive Kelly fraction based on time to expiry.
+ * Shorter durations = smaller fraction (less certain).
+ */
+function adaptiveKellyFraction(market: Market): number {
+  const hoursToExpiry = Math.max(0, (market.windowEnd - Date.now()) / (1000 * 3600));
+  const buckets = BAYESIAN.kellyByDuration;
+
+  if (hoursToExpiry < 1) return buckets.under1h;
+  if (hoursToExpiry < 6) return buckets.hours1to6;
+  if (hoursToExpiry < 24) return buckets.hours6to24;
+  if (hoursToExpiry < 168) return buckets.days1to7;  // 7 days
+  return buckets.over7d;
+}
 
 /**
  * Kelly Criterion position sizing with slippage-adjusted edge.
@@ -45,7 +60,7 @@ export function sizePosition(
     return null;
   }
 
-  kelly *= TRADING.kellyFraction;
+  kelly *= adaptiveKellyFraction(signal.market);
 
   let size = Math.min(
     bankroll * kelly,
@@ -86,17 +101,11 @@ function sizeBuyBoth(
   bankroll: number,
   books: MarketBooks,
 ): Signal | null {
-  // For complete-set, edge is guaranteed: 1 - (yesVWAP + noVWAP)
-  let maxPct = 0.10;
-  let maxUsd = 1000;
-
-  let size = Math.min(bankroll * maxPct, maxUsd, bankroll);
+  let size = Math.min(bankroll * 0.10, 1000, bankroll);
   if (size < 2) return null;
 
-  // Split equally between YES and NO
   const halfSize = size / 2;
 
-  // Check slippage on both sides
   const yesGate = checkSlippageGates(books.yes, halfSize, signal.edge);
   const noGate = checkSlippageGates(books.no, halfSize, signal.edge);
 
@@ -109,18 +118,16 @@ function sizeBuyBoth(
     return null;
   }
 
-  // Actual cost per share after slippage on both sides
   const costPerSet = yesGate.slippage.vwap + noGate.slippage.vwap;
   if (costPerSet >= 1.0) {
     log.debug("Complete-set VWAP cost >= $1, no profit after slippage");
     return null;
   }
 
-  const shares = halfSize / yesGate.slippage.vwap; // shares of each side
+  const shares = halfSize / yesGate.slippage.vwap;
 
-  // Build a combined slippage estimate
   const combinedSlippage: SlippageEstimate = {
-    vwap: costPerSet, // total cost per set
+    vwap: costPerSet,
     slippagePct: (costPerSet - books.combinedAsk) / books.combinedAsk,
     fillableShares: Math.min(yesGate.slippage.fillableShares, noGate.slippage.fillableShares),
     fillableUsd: yesGate.slippage.fillableUsd + noGate.slippage.fillableUsd,
